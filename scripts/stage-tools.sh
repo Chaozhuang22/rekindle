@@ -41,8 +41,12 @@ cp "$VENDOR/peki/KUAL.jar" "$KINDLE_VOL/documents/KUAL.jar"
 cp "$ROOT/kindle/documents/KUAL.sh" "$KINDLE_VOL/documents/KUAL.sh"
 rm -rf "$KINDLE_VOL/documents/KUAL.sh.sdr"
 
-say "staging USBNetwork (pw2_and_up build: PW2, KT2 and newer K5-platform devices)"
-cp "$VENDOR/usbnet/USBNetwork/Update_usbnet_0.22.N_install_pw2_and_up.bin" "$KINDLE_VOL/mrpackages/"
+# NiLuJe ships two builds: touch_pw (Kindle Touch, Paperwhite 1) and pw2_and_up (PW2, KT2, Voyage, ...).
+build=${USBNET_BUILD:-pw2_and_up}
+bin=$VENDOR/usbnet/USBNetwork/Update_usbnet_0.22.N_install_$build.bin
+[ -f "$bin" ] || die "no USBNetwork build '$build' (use USBNET_BUILD=touch_pw or pw2_and_up)"
+say "staging USBNetwork ($build build)"
+cp "$bin" "$KINDLE_VOL/mrpackages/"
 
 clean_appledouble
 say "staged, $(free_mb) MB free. On the Kindle:"

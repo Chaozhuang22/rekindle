@@ -1,20 +1,55 @@
 #!/bin/sh
-# Find the Kindle on the local network: populate the ARP table, then try an SSH
-# login (with the Kindle key) against every neighbour and print the one that answers.
+# Find the Kindle on the local network and print its IP (use it as KINDLE_HOST).
 #
-# Usage: scripts/find-kindle.sh        (prints the IP; use it as KINDLE_HOST)
+# The Kindle ignores ping, so this sweeps TCP port 22 across each local /24 (which also
+# fills the neighbour table), then tries an SSH login with the Kindle key against every
+# candidate. Works with macOS (ifconfig/arp) and Linux (ip; or ifconfig/arp).
+#
+# Usage: scripts/find-kindle.sh
 set -eu
 . "$(dirname "$0")/lib.sh"
 
 [ -f "$KINDLE_KEY" ] || die "no key at $KINDLE_KEY (run scripts/setup-ssh.sh first)"
 
-# Broadcast ping of every /24 we are on, so ARP learns the neighbours.
-for net in $(ifconfig 2>/dev/null | awk '/inet / && $2 != "127.0.0.1" { print $2 }' | cut -d. -f1-3); do
-	ping -c 2 -t 2 "$net.255" >/dev/null 2>&1 || ping -c 2 -b -W 2 "$net.255" >/dev/null 2>&1 || true
+local_ips() {
+	if command -v ip >/dev/null 2>&1; then
+		ip -4 -o addr show 2>/dev/null | awk '{ split($4, a, "/"); print a[1] }'
+	else
+		ifconfig 2>/dev/null | awk '/inet / { sub("addr:", "", $2); print $2 }'
+	fi | grep -v -e '^127\.' -e '^169\.254\.'
+}
+
+neighbours() {
+	if command -v ip >/dev/null 2>&1; then
+		ip -4 neigh show 2>/dev/null | awk '!/FAILED|INCOMPLETE/ { print $1 }'
+	else
+		arp -an 2>/dev/null | awk '!/incomplete/ { gsub(/[()]/, "", $2); print $2 }'
+	fi
+}
+
+# nc flag for a connect timeout differs: macOS -G, Linux (OpenBSD netcat) -w.
+if nc -h 2>&1 | grep -q -e '-G'; then NC_TIMEOUT="-G 3"; else NC_TIMEOUT="-w 3"; fi
+
+nets=$(local_ips | cut -d. -f1-3 | sort -u)
+[ -n "$nets" ] || die "no IPv4 address on this machine"
+say "scanning port 22 on $(echo "$nets" | tr '\n' ' ')(about a minute)…" >&2
+
+swept=$(mktemp)
+for net in $nets; do
+	i=1
+	while [ "$i" -le 254 ]; do
+		# shellcheck disable=SC2086
+		(nc -z $NC_TIMEOUT "$net.$i" 22 >/dev/null 2>&1 && echo "$net.$i" >>"$swept") &
+		# Batches of 32 stay under per-user process limits.
+		[ $((i % 32)) -eq 0 ] && wait
+		i=$((i + 1))
+	done
+	wait
 done
 
-candidates=$(arp -an | awk '!/incomplete/ { gsub(/[()]/, "", $2); print $2 }' | grep -v '\.255$' || true)
-[ -n "$candidates" ] || die "no neighbours in the ARP table; is the Kindle on the same Wi-Fi?"
+candidates=$( (cat "$swept"; neighbours) | grep -v -e '\.255$' -e '\.0$' | sort -u)
+rm -f "$swept"
+[ -n "$candidates" ] || die "no hosts found; is the Kindle awake and on the same Wi-Fi?"
 
 out=$(mktemp)
 for ip in $candidates; do
@@ -31,5 +66,5 @@ if [ -s "$out" ]; then
 	rm -f "$out"
 else
 	rm -f "$out"
-	die "no Kindle answered over SSH. Check Wi-Fi, that USBNetwork autostart is on, and restart the Kindle"
+	die "no Kindle answered over SSH. Wake it, check Wi-Fi and that usbnet/auto exists, then restart it"
 fi

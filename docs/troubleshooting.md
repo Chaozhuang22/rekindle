@@ -31,7 +31,7 @@ Each entry was hit while building this project on a KT2 / FW 5.8.11, unless mark
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Power button does nothing while the dashboard runs | The dashboard sets powerd's `preventScreenSaver`, and with that set powerd ignores the button: no `goingToScreenSaver` event. | Fixed: the script reads the power key directly from `/dev/input/event0` (the `max77696-onkey` device on KT2). Other models may use a different event node. |
+| Power button does nothing while the dashboard runs | The dashboard sets powerd's `preventScreenSaver`, and with that set powerd ignores the button: no `goingToScreenSaver` event. | Fixed: the script reads the power key straight from its input device, found by name in `/proc/bus/input/devices` (KT2: `max77696-onkey` = `event0`). `rekindle.log` records the device as "power button device …"; if yours has an unexpected name, add it to the pattern in `power_key_device`. |
 | Text drawn with `-C WHITE -B BLACK` comes out black on white | FBInk 1.25's TrueType path did not honour these colours in our tests. | Use `-h` (invert) on a black rectangle, as the rain banner does. |
 | Dashboard keeps running old code after `deploy.sh` | A running shell keeps executing the old script file. | `scripts/deploy.sh --restart`. |
 | `grep -E`, `head -c`, `nohup` "not found"/"invalid option" | BusyBox 1.17 on FW 5.8. | Use `grep -e`, `cut -c`, `setsid`. |

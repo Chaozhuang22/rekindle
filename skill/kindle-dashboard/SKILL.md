@@ -18,10 +18,12 @@ Reference, read as needed:
 ## Steps
 
 1. **Identify the device.** Firmware from `system/version.txt` on the mounted drive (or the user's
-   Device Info), model from the serial prefix. Check the firmware against
-   https://kindlemodding.org/jailbreaks.json. Done when model and firmware are known and inside
-   WinterBreak's 5.6.1.1–5.18.0.2. Outside that range, stop: this repo's flow does not apply.
-   Also confirm the Wi-Fi band: pre-2018 models are 2.4 GHz only.
+   Device Info), model from the serial prefix via https://wiki.mobileread.com/wiki/Kindle_Serial_Numbers.
+   Done when model and firmware are known and placed in the guide's "Before you start" table.
+   Firmware 5.16.3+ is not covered: stop and say so. Firmware 5.11–5.16.2 needs the manual
+   `renameotabin` step that `stage-tools.sh` stops at; tell the user before starting.
+   Kindle Touch / Paperwhite 1 need `USBNET_BUILD=touch_pw` at step 6. Also confirm the Wi-Fi band:
+   pre-2018 models are 2.4 GHz only.
 2. **Fetch packages:** `scripts/fetch-deps.sh`. Done when it prints `done` (checksums verified).
 3. **Prepare:** user backs up books, Airplane mode on, plugs in. Run `scripts/prepare-jailbreak.sh`.
    Done when it reports the free space; the filler can take many minutes, so run it in the background.
@@ -33,8 +35,9 @@ Reference, read as needed:
    Done when `usbnet/usbnetwork_install.log` ends in "Success" and tapping KUAL opens its menu.
 7. **SSH:** `scripts/setup-ssh.sh`; device: eject and restart. Then
    `export KINDLE_HOST=$(scripts/find-kindle.sh)`. Done when `ssh -i ~/.ssh/id_ed25519_kindle root@$KINDLE_HOST true` succeeds.
-8. **Dashboard:** set `LATITUDE`, `LONGITUDE`, `PLACE`, `TZ_POSIX`, `TZ_IANA` in
-   `kindle/extensions/rekindle/rekindle.conf` for the user's location, `scripts/deploy.sh`;
+8. **Dashboard:** set `LATITUDE`, `LONGITUDE`, `PLACE`, `TZ_IANA` and `TZ_POSIX` in
+   `kindle/extensions/rekindle/rekindle.conf` for the user's location. `TZ_POSIX` must be a POSIX
+   string (guide phase 7 table), never an IANA name. Then `scripts/deploy.sh`;
    device: KUAL → Rekindle dashboard → Start dashboard. Done when `scripts/screenshot.sh` shows the
    clock and weather, a second screenshot a minute later shows the clock advanced, and the user
    confirms the power button returns to the Kindle UI.

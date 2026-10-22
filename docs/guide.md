@@ -1,11 +1,26 @@
 # Setup guide: from stock Kindle to clock and weather display
 
-The full path this project took on a Kindle 7th gen (KT2) running firmware 5.8.11. Each phase lists
-what runs on the computer, what you do on the Kindle, and how to know it worked. Something
-off? [troubleshooting.md](troubleshooting.md) is organised by symptom.
+Every phase lists what runs on the computer, what you do on the Kindle, and how to know it
+worked. Something off? [troubleshooting.md](troubleshooting.md) is organised by symptom.
 
-The host scripts were written for macOS (`/Volumes/Kindle`). On Linux, set `KINDLE_VOL` to the
-mount point.
+## Before you start: is your Kindle covered?
+
+| Situation | Status |
+|---|---|
+| Kindle 7th gen (KT2), firmware 5.8.11, macOS host | **Tested end to end** (the reference device) |
+| Other K5-platform Kindles (Touch, PW1–PW3, Voyage, Oasis 1, Basic 7th–8th gen) still on firmware **5.6.1.1–5.10.x** | Should work: same jailbreak, update block and tools. The dashboard scales to the screen size; the power-button device is found by name. Not tested on hardware. |
+| Firmware **5.11–5.16.2** | The jailbreak applies, but blocking updates needs the `renameotabin` KUAL extension ([KindleModding](https://kindlemodding.org/jailbreaking/Legacy/post-jailbreak/disable-ota.html)), which `stage-tools.sh` does not automate; it stops and points there. |
+| Firmware **5.16.3 and newer** | **Not covered.** These are hard-float ("kindlehf") systems: the soft-float USBNetwork used here does not apply, and above 5.18.0.2 WinterBreak does not either. |
+| Kindle Touch (KT) or Paperwhite 1 | Use the older USBNetwork build: `USBNET_BUILD=touch_pw scripts/stage-tools.sh`. |
+| Linux host | Should work: set `KINDLE_VOL` to the drive's mount point. Not tested. |
+| Windows host | Not supported by the scripts; follow the [KindleModding guides](https://kindlemodding.org/jailbreaking/) by hand. |
+
+Get the code:
+
+```sh
+git clone https://github.com/Chaozhuang22/rekindle.git
+cd rekindle
+```
 
 ```mermaid
 flowchart LR
@@ -21,8 +36,10 @@ flowchart LR
 ## 0. Check model and firmware
 
 - **Firmware:** Kindle → Settings → Device Options → Device Info. Also printed in `system/version.txt` on the USB drive.
-- **Model:** first characters of the serial number. On macOS, `ioreg -p IOUSB -l -w0 | grep -A2 '"Amazon Kindle"'` shows it as `USB Serial Number`.
-  This project's `90C6…` is a KT2. NiLuJe's FBInk also prints the model after jailbreak (`fbink -e` → `deviceName`).
+- **Model:** the serial number is on the same Device Info screen (on macOS also
+  `ioreg -p IOUSB -l -w0 | grep -A2 '"Amazon Kindle"'` → `USB Serial Number`). Look up its first
+  characters in MobileRead's [Kindle Serial Numbers](https://wiki.mobileread.com/wiki/Kindle_Serial_Numbers)
+  table (for example, this project's `90C6…` is a Kindle 7th gen, KT2). After the jailbreak, `fbink -e` prints it as `deviceName`.
 - **Jailbreak coverage:** look the firmware up in [kindlemodding.org's live list](https://kindlemodding.org/jailbreaks.json).
   WinterBreak (used here) covers 5.6.1.1–5.18.0.2 on most models from the PW1 onwards.
 - **Wi-Fi:** pre-2018 Kindles are **2.4 GHz only**. A 5 GHz-only network is invisible to them.
@@ -43,7 +60,7 @@ This downloads pinned versions into `vendor/` and verifies their SHA-256:
 | Universal Hotfix 2.5.0 | Keeps the jailbreak working and installs FBInk plus the `.sh` shell integration. |
 | PEKI v1.0 (`KUAL.jar` only) | The KUAL launcher booklet. This repo ships its own `KUAL.sh` (see phase 5). |
 | MRPI (KHF build) | Package installer. The zip contains builds for K5/PW2-era devices too. |
-| USBNetwork 0.22.N | SSH server. KT2 uses the `pw2_and_up` build. |
+| USBNetwork 0.22.N | SSH server. `pw2_and_up` build by default (PW2, KT2 and later); Kindle Touch and PW1 use `USBNET_BUILD=touch_pw`. |
 
 ✅ Done when the script ends with `done` and no checksum errors.
 
@@ -127,10 +144,33 @@ working as a normal drive.
 
 ## 7. Deploy and run the dashboard
 
+Set your location and timezone in `kindle/extensions/rekindle/rekindle.conf` first:
+
+- `LATITUDE`, `LONGITUDE`: decimal degrees (right-click a spot in Google Maps to copy them); `PLACE`: the label shown on screen.
+- `TZ_IANA`: your zone's name, e.g. `Europe/Berlin` (used by the weather service).
+- `TZ_POSIX`: the same zone for the clock, as a POSIX string, because the Kindle has no timezone
+  database. A name like `Europe/Berlin` would silently show UTC.
+
+| Zone | `TZ_POSIX` | `TZ_IANA` |
+|---|---|---|
+| Japan | `JST-9` | `Asia/Tokyo` |
+| China | `CST-8` | `Asia/Shanghai` |
+| India | `IST-5:30` | `Asia/Kolkata` |
+| Sydney | `AEST-10AEDT,M10.1.0,M4.1.0/3` | `Australia/Sydney` |
+| Central Europe | `CET-1CEST,M3.5.0,M10.5.0/3` | `Europe/Berlin` (or Paris, Madrid, …) |
+| UK | `GMT0BST,M3.5.0/1,M10.5.0` | `Europe/London` |
+| US Eastern | `EST5EDT,M3.2.0,M11.1.0` | `America/New_York` |
+| US Pacific | `PST8PDT,M3.2.0,M11.1.0` | `America/Los_Angeles` |
+
+These were checked on the Kindle against summer and winter dates. For other zones,
+[posix_tz_db's zones.csv](https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv) maps each IANA name to its POSIX string.
+
 ```sh
-$EDITOR kindle/extensions/rekindle/rekindle.conf   # latitude/longitude, place, timezone
 scripts/deploy.sh
 ```
+
+The dashboard scales its 600×800 layout to the screen it finds, so Paperwhites (758×1024,
+1072×1448) get the same design, larger.
 
 On the Kindle: **KUAL → Rekindle dashboard → Start dashboard**. The Kindle UI stops and the
 dashboard takes over within about 5 seconds. The **power button** exits back to the Kindle UI.
@@ -152,3 +192,7 @@ takes `/mnt/us` (where the dashboard lives) away from it.
 
 Edit files under `kindle/`, then `scripts/deploy.sh --restart`. On-device settings in
 `/mnt/us/extensions/rekindle/rekindle.conf` are kept across deploys.
+
+To preview the layout at another screen size on your own Kindle, start it with a smaller target,
+e.g. a Paperwhite 3's proportions:
+`ssh … 'REKINDLE_VIEW=444x600 /mnt/us/extensions/rekindle/bin/rekindle.sh start'`.

@@ -176,35 +176,72 @@ describe() {
 
 # --- Drawing ---------------------------------------------------------------
 
+# The layout is authored on a 600x800 canvas (Kindle Basic/Touch). layout_init scales it
+# uniformly to the real screen and centers it, so the same numbers work on 758x1024 and
+# 1072x1448 Paperwhites. Every helper below takes canvas coordinates.
+# REKINDLE_VIEW=WxH overrides the target size (testing other sizes on one device).
+layout_init() {
+	eval "$(fbink -e | tr ';' '\n' | grep -e '^viewWidth=' -e '^viewHeight=')"
+	SCR_W=${viewWidth:-600}
+	SCR_H=${viewHeight:-800}
+	tw=$SCR_W th=$SCR_H
+	if [ -n "$REKINDLE_VIEW" ]; then
+		tw=${REKINDLE_VIEW%x*} th=${REKINDLE_VIEW#*x}
+	fi
+	# Scale in thousandths: the smaller of the two axis ratios, so nothing overflows.
+	S=$((tw * 1000 / 600))
+	[ $((th * 1000 / 800)) -lt "$S" ] && S=$((th * 1000 / 800))
+	OX=$(((SCR_W - 600 * S / 1000) / 2))
+	OY=$(((SCR_H - 800 * S / 1000) / 2))
+}
+
+# Canvas -> device: positions (offset + scale) and lengths (scale, at least 1 px).
+px_x() { echo $((OX + $1 * S / 1000)); }
+px_y() { echo $((OY + $1 * S / 1000)); }
+px_len() {
+	v=$(($1 * S / 1000))
+	[ "$v" -lt 1 ] && v=1
+	echo "$v"
+}
+
 # Text helpers: nothing is refreshed (-b); `--` lets text start with "-" (negative temperatures).
 # fb_text FONT PX TOP LEFT RIGHT TEXT [extra fbink flags...]: centered in the [LEFT, 600-RIGHT] band.
 fb_text() {
-	font=$1 px=$2 top=$3 left=$4 right=$5 text=$6
+	font=$1 px=$(px_len "$2") top=$(px_y "$3") left=$(px_x "$4") text=$6
+	right=$((SCR_W - $(px_x $((600 - $5)))))
 	shift 6
 	fbink -q -b -m "$@" -t regular="$font",px="$px",top="$top",left="$left",right="$right" -- "$text" >/dev/null 2>&1
 }
 
 # fb_ltext FONT PX TOP LEFT TEXT [extra fbink flags...]: left edge at LEFT.
 fb_ltext() {
-	font=$1 px=$2 top=$3 left=$4 text=$5
+	font=$1 px=$(px_len "$2") top=$(px_y "$3") left=$(px_x "$4") text=$5
 	shift 5
 	fbink -q -b "$@" -t regular="$font",px="$px",top="$top",left="$left" -- "$text" >/dev/null 2>&1
 }
 
 # fb_rtext FONT PX TOP RIGHT_EDGE TEXT [extra fbink flags...]: right edge at RIGHT_EDGE.
+# Sets RTEXT_LEFT to the text's left edge (canvas units) for placing things before it.
 fb_rtext() {
-	w=$(text_width "$1" "$2" "$5")
-	rfont=$1 rpx=$2 rtop=$3 rx=$(($4 - ${w:-0})) rtext=$5
+	rfont=$1 rpx=$(px_len "$2") rtop=$(px_y "$3") rtext=$5
+	w=$(text_width "$rfont" "$rpx" "$rtext")
+	rx=$(($(px_x "$4") - ${w:-0}))
+	RTEXT_LEFT=$(((rx - OX) * 1000 / S))
 	shift 5
-	fb_ltext "$rfont" "$rpx" "$rtop" "$rx" "$rtext" "$@"
+	fbink -q -b "$@" -t regular="$rfont",px="$rpx",top="$rtop",left="$rx" -- "$rtext" >/dev/null 2>&1
 }
 
 fb_rect() {
 	# fb_rect TOP LEFT WIDTH HEIGHT COLOR
-	fbink -q -b -B "$5" -k top="$1",left="$2",width="$3",height="$4" >/dev/null 2>&1
+	fbink -q -b -B "$5" -k top="$(px_y "$1")",left="$(px_x "$2")",width="$(px_len "$3")",height="$(px_len "$4")" >/dev/null 2>&1
 }
 
-# Width in px of TEXT at PX in FONT, measured without drawing (fgless + bgless).
+# fb_image FILE X Y W H: draw an icon scaled to W x H canvas px.
+fb_image() {
+	fbink -q -b -g file="$1",x="$(px_x "$2")",y="$(px_y "$3")",w="$(px_len "$4")",h="$(px_len "$5")" >/dev/null 2>&1
+}
+
+# Width in device px of TEXT at device PX in FONT, measured without drawing (fgless + bgless).
 text_width() {
 	fbink -q -b -O -T -E -t regular="$1",px="$2",top=0,left=0 -- "$3" 2>/dev/null |
 		sed -n 's/.*lastRect_Width=\([0-9]*\).*/\1/p'
@@ -247,7 +284,7 @@ draw_rain_chart() {
 # place + weather freshness on the left, battery on the right. Gray, so it stays
 # below the clock and weather; the battery turns black at <=20 % when not charging.
 draw_status() {
-	fbink -q -b -C GRAY5 -t regular="$F_REG",px=22,top=770,left=40 -- "$1" >/dev/null 2>&1
+	fb_ltext "$F_REG" 22 770 40 "$1" -C GRAY5
 
 	lvl=$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null)
 	[ -n "$lvl" ] || return 0
@@ -265,11 +302,9 @@ draw_status() {
 	fb_rect 778 $((gx + 28)) 3 6 "$color"
 
 	# Percentage right-aligned 8 px before the glyph; bolt before that while charging.
-	w=$(text_width "$F_REG" 22 "$lvl%")
-	tx=$((gx - 8 - ${w:-36}))
-	fbink -q -b -C "$color" -t regular="$F_REG",px=22,top=770,left="$tx" -- "$lvl%" >/dev/null 2>&1
+	fb_rtext "$F_REG" 22 770 $((gx - 8)) "$lvl%" -C "$color"
 	if [ "$charging" = 1 ]; then
-		fbink -q -b -g file="$DIR/icons/bolt.png",x=$((tx - 20)),y=770 >/dev/null 2>&1
+		fb_image "$DIR/icons/bolt.png" $((RTEXT_LEFT - 20)) 770 14 22
 	fi
 }
 
@@ -309,7 +344,7 @@ draw() {
 
 		if [ -n "$rain_text" ]; then
 			# Rain: compact weather row, black banner, hourly chart.
-			fbink -q -b -g file="$DIR/icons/$ICON.png",x=36,y=352,w=120,h=120 >/dev/null 2>&1
+			fb_image "$DIR/icons/$ICON.png" 36 352 120 120
 			fb_ltext "$F_BOLD" 112 344 170 "$temp"
 			fb_rtext "$F_REG" 32 366 560 "$DESC"
 			[ -n "$hilo" ] && fb_rtext "$F_REG" 30 412 560 "$hilo" -C GRAY5
@@ -319,7 +354,7 @@ draw() {
 			draw_rain_chart 586 120
 		else
 			# Dry: nothing about rain; the weather grows into the space.
-			fbink -q -b -g file="$DIR/icons/$ICON.png",x=40,y=420 >/dev/null 2>&1
+			fb_image "$DIR/icons/$ICON.png" 40 420 200 200
 			fb_ltext "$F_BOLD" 160 410 270 "$temp"
 			fb_ltext "$F_REG" 36 600 276 "$DESC"
 			[ -n "$hilo" ] && fb_ltext "$F_REG" 32 648 276 "$hilo" -C GRAY5
@@ -360,6 +395,18 @@ ui_on() {
 	start framework >/dev/null 2>&1
 }
 
+# Input device of the power button: the first device in /proc/bus/input/devices whose
+# name looks like a power key (KT2: "max77696-onkey"; other models' names are expected to
+# contain "pwrkey", "power" or "gpio-keys"). Falls back to event0.
+power_key_device() {
+	dev=$(awk '
+		/^N: Name=/ { name = tolower($0) }
+		/^H: Handlers=/ && name ~ /onkey|pwrkey|power|gpio-keys/ {
+			if (match($0, /event[0-9]+/)) { print substr($0, RSTART, RLENGTH); exit }
+		}' /proc/bus/input/devices 2>/dev/null)
+	echo "/dev/input/${dev:-event0}"
+}
+
 # --- Main loop -------------------------------------------------------------
 
 run() {
@@ -377,12 +424,16 @@ run() {
 	trap 'shutdown' TERM INT HUP
 
 	ui_off
+	layout_init
+	log "screen ${SCR_W}x${SCR_H}, scale $S/1000"
 
-	# Power button: read the onkey input device directly. powerd ignores the button
+	# Power button: read its input device directly. powerd ignores the button
 	# while preventScreenSaver is set, so its screensaver events never fire.
+	key_dev=$(power_key_device)
+	log "power button device $key_dev"
 	main_pid=$$
 	(
-		dd if=/dev/input/event0 bs=16 count=1 >/dev/null 2>&1 &&
+		dd if="$key_dev" bs=16 count=1 >/dev/null 2>&1 &&
 			log "power button pressed" &&
 			kill -TERM "$main_pid" 2>/dev/null
 	) &
