@@ -1,0 +1,24 @@
+{
+	"items": [
+	{
+		"name": "Rekindle dashboard",
+		"priority": 0,
+		"items": [
+		{
+			"name": "Start dashboard",
+			"priority": 1,
+			"action": "./bin/rekindle.sh",
+			"params": "start",
+			"exitmenu": true
+		},
+		{
+			"name": "Stop dashboard",
+			"priority": 2,
+			"action": "./bin/rekindle.sh",
+			"params": "stop",
+			"exitmenu": true
+		}
+		]
+	}
+	]
+}
