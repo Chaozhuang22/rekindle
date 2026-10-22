@@ -236,6 +236,11 @@ fb_rect() {
 	fbink -q -b -B "$5" -k top="$(px_y "$1")",left="$(px_x "$2")",width="$(px_len "$3")",height="$(px_len "$4")" >/dev/null 2>&1
 }
 
+# fb_refresh TOP LEFT WIDTH HEIGHT: refresh only this rectangle of the screen (non-flashing).
+fb_refresh() {
+	fbink -q -s top="$(px_y "$1")",left="$(px_x "$2")",width="$(px_len "$3")",height="$(px_len "$4")" >/dev/null 2>&1
+}
+
 # fb_image FILE X Y W H: draw an icon scaled to W x H canvas px.
 fb_image() {
 	fbink -q -b -g file="$1",x="$(px_x "$2")",y="$(px_y "$3")",w="$(px_len "$4")",h="$(px_len "$5")" >/dev/null 2>&1
@@ -280,15 +285,39 @@ draw_rain_chart() {
 	done
 }
 
+# Status bar inputs: battery level, charging, weather fetch time and whether it is stale.
+# Sources $WEATHER_ENV. STATUS_KEY changes exactly when the status bar would look different.
+read_status() {
+	ST_FETCHED="" ST_OFFLINE=0
+	if [ -f "$WEATHER_ENV" ]; then
+		. "$WEATHER_ENV"
+		ST_FETCHED=$W_FETCHED
+		[ $(($(date +%s) - W_FETCHED)) -gt 7200 ] && ST_OFFLINE=1
+	fi
+	ST_LVL=$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null)
+	ST_CHG=$(lipc-get-prop com.lab126.powerd isCharging 2>/dev/null)
+	STATUS_KEY="$ST_LVL $ST_CHG $ST_FETCHED $ST_OFFLINE"
+}
+
 # Bottom status bar on the content margins (x 40..560, same as the divider):
 # place + weather freshness on the left, battery on the right. Gray, so it stays
 # below the clock and weather; the battery turns black at <=20 % when not charging.
+# Draws from the last read_status into a cleared area.
 draw_status() {
-	fb_ltext "$F_REG" 22 770 40 "$1" -C GRAY5
+	DRAWN_STATUS=$STATUS_KEY
+	footer=$PLACE
+	if [ -n "$ST_FETCHED" ]; then
+		when=$(date -d "@$ST_FETCHED" '+%H:%M' 2>/dev/null)
+		if [ "$ST_OFFLINE" = 1 ]; then
+			footer="$PLACE · weather offline since $when"
+		else
+			footer="$PLACE · updated $when"
+		fi
+	fi
+	fb_ltext "$F_REG" 22 770 40 "$footer" -C GRAY5
 
-	lvl=$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null)
+	lvl=$ST_LVL charging=$ST_CHG
 	[ -n "$lvl" ] || return 0
-	charging=$(lipc-get-prop com.lab126.powerd isCharging 2>/dev/null)
 	color=GRAY5
 	[ "$charging" != 1 ] && [ "$lvl" -le 20 ] && color=BLACK
 
@@ -308,18 +337,41 @@ draw_status() {
 	fi
 }
 
+# Bands redrawn between full redraws (canvas units, full content width): the clock text
+# box (its height equals the font px) and the status bar line drawn by draw_status.
+CLOCK_TOP=62 CLOCK_H=220
+STATUS_TOP=770 STATUS_H=22
+
+draw_clock() {
+	fb_text "$F_BOLD" 220 $CLOCK_TOP 0 0 "$(date '+%H:%M')"
+}
+
+# Minute tick between full redraws: clear, redraw and refresh only the clock band, and the
+# status bar only when it changed; the rest of the screen is not touched.
+draw_partial() {
+	fb_rect $CLOCK_TOP 0 600 $CLOCK_H WHITE
+	draw_clock
+	fb_refresh $CLOCK_TOP 0 600 $CLOCK_H
+
+	read_status
+	[ "$STATUS_KEY" = "$DRAWN_STATUS" ] && return 0
+	fb_rect $STATUS_TOP 40 520 $STATUS_H WHITE
+	draw_status
+	fb_refresh $STATUS_TOP 40 520 $STATUS_H
+}
+
+# draw FLASH: redraw and refresh the whole screen (FLASH=1: black flash, clears ghosting).
 draw() {
 	flash=$1
-	now=$(date +%s)
+	read_status
 
 	fbink -q -b -k >/dev/null 2>&1
 
 	fb_text "$F_REG" 34 28 0 0 "$(date '+%A, %-d %B')"
-	fb_text "$F_BOLD" 220 62 0 0 "$(date '+%H:%M')"
+	draw_clock
 	fb_rect 330 40 520 3 BLACK
 
-	if [ -f "$WEATHER_ENV" ]; then
-		. "$WEATHER_ENV"
+	if [ -n "$ST_FETCHED" ]; then
 		describe "$W_CODE" "$W_IS_DAY"
 		temp="$(round "$W_TEMP")°"
 		hilo=""
@@ -359,19 +411,11 @@ draw() {
 			fb_ltext "$F_REG" 36 600 276 "$DESC"
 			[ -n "$hilo" ] && fb_ltext "$F_REG" 32 648 276 "$hilo" -C GRAY5
 		fi
-
-		age=$((now - W_FETCHED))
-		if [ "$age" -gt 7200 ]; then
-			footer="$PLACE · weather offline since $(date -d "@$W_FETCHED" '+%H:%M' 2>/dev/null)"
-		else
-			footer="$PLACE · updated $(date -d "@$W_FETCHED" '+%H:%M' 2>/dev/null)"
-		fi
 	else
 		fb_text "$F_MED" 40 500 0 0 "Fetching weather…"
-		footer="$PLACE"
 	fi
 
-	draw_status "$footer"
+	draw_status
 
 	if [ "$flash" = 1 ]; then
 		fbink -q -f -s >/dev/null 2>&1
@@ -442,16 +486,21 @@ run() {
 	last_fetch=0
 	last_ntp=0
 	first=1
+	last_day=""
 	while :; do
-		now=$(date +%s)
-		min=$(date +%M)
-		min=${min#0}
+		set -- $(date '+%s %M %j')
+		now=$1 min=${2#0} today=$3
 
-		flash=0
+		# Full redraw (with flash) at start and every FULL_REFRESH_MINUTES; full redraw
+		# for the new date after midnight; otherwise only the clock and changed status bar.
 		if [ "$first" = 1 ] || [ $((min % FULL_REFRESH_MINUTES)) -eq 0 ]; then
-			flash=1
+			draw 1
+		elif [ "$today" != "$last_day" ]; then
+			draw 0
+		else
+			draw_partial
 		fi
-		draw "$flash"
+		last_day=$today
 		first=0
 
 		if [ $((now - last_fetch)) -ge $((WEATHER_MINUTES * 60 - 30)) ]; then

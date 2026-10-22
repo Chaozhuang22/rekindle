@@ -7,7 +7,7 @@ Turn an old Kindle into an always-on **clock and weather display**.
   <img src="docs/images/dashboard-rain.png" width="280" alt="Rain banner and hourly rain-chance chart">
 </p>
 
-- Large clock, updated every minute
+- Large clock, updated every minute by repainting only the clock area (the whole screen flashes clean every 15 minutes)
 - Temperature, conditions and today's high/low from [Open-Meteo](https://open-meteo.com/) (no API key)
 - Rain only when it matters: on a dry day nothing about rain is shown; when rain is falling or due within
   12 hours, a black banner such as **Rain 14:00–18:00 · peak 85%** appears above an hourly chart of the
