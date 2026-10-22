@@ -3,13 +3,15 @@
 Turn an old Kindle into an always-on **clock and weather display**.
 
 <p>
-  <img src="docs/images/dashboard.png" width="280" alt="Clock, weather icon, temperature, high/low, no rain">
-  <img src="docs/images/dashboard-rain.png" width="280" alt="Rain banner">
+  <img src="docs/images/dashboard.png" width="280" alt="Clock, large weather icon, temperature, conditions and high/low on a dry day">
+  <img src="docs/images/dashboard-rain.png" width="280" alt="Rain banner and hourly rain-chance chart">
 </p>
 
 - Large clock, updated every minute
 - Temperature, conditions and today's high/low from [Open-Meteo](https://open-meteo.com/) (no API key)
-- Rain at a glance: **No rain** for the next 3 hours, or a black banner such as **Rain from 14:00 (60%)**
+- Rain only when it matters: on a dry day nothing about rain is shown; when rain is falling or due within
+  12 hours, a black banner such as **Rain 14:00–18:00 · peak 85%** appears above an hourly chart of the
+  chance of rain (black bars are the rainy hours)
 - Quiet status bar: place, last weather update, and battery (turns black below 20 %); the power button returns to the normal Kindle UI
 - Runs entirely on the Kindle (shell script + [FBInk](https://github.com/NiLuJe/FBInk)), no server needed
 
