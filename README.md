@@ -10,7 +10,7 @@ Turn an old Kindle into an always-on **clock and weather display**.
 - Large clock, updated every minute
 - Temperature, conditions and today's high/low from [Open-Meteo](https://open-meteo.com/) (no API key)
 - Rain at a glance: **No rain** for the next 3 hours, or a black banner such as **Rain from 14:00 (60%)**
-- Battery gauge; the power button returns to the normal Kindle UI
+- Quiet status bar: place, last weather update, and battery (turns black below 20 %); the power button returns to the normal Kindle UI
 - Runs entirely on the Kindle (shell script + [FBInk](https://github.com/NiLuJe/FBInk)), no server needed
 
 Tested on a Kindle 7th gen (KT2, 600×800) with firmware 5.8.11. Other models in

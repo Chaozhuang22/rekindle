@@ -182,19 +182,39 @@ fb_rect() {
 	fbink -q -b -B "$5" -k top="$1",left="$2",width="$3",height="$4" >/dev/null 2>&1
 }
 
-# Battery gauge in the top-right corner: "NN%" + outline icon, bolt when charging.
-draw_battery() {
+# Width in px of TEXT at PX in FONT, measured without drawing (fgless + bgless).
+text_width() {
+	fbink -q -b -O -T -E -t regular="$1",px="$2",top=0,left=0 "$3" 2>/dev/null |
+		sed -n 's/.*lastRect_Width=\([0-9]*\).*/\1/p'
+}
+
+# Bottom status bar on the content margins (x 40..560, same as the divider):
+# place + weather freshness on the left, battery on the right. Gray, so it stays
+# below the clock and weather; the battery turns black at <=20 % when not charging.
+draw_status() {
+	fbink -q -b -C GRAY5 -t regular="$F_REG",px=22,top=770,left=40 "$1" >/dev/null 2>&1
+
 	lvl=$(lipc-get-prop com.lab126.powerd battLevel 2>/dev/null)
 	[ -n "$lvl" ] || return 0
-	fill=$((lvl * 34 / 100))
+	charging=$(lipc-get-prop com.lab126.powerd isCharging 2>/dev/null)
+	color=GRAY5
+	[ "$charging" != 1 ] && [ "$lvl" -le 20 ] && color=BLACK
+
+	# Outline glyph: 28x14 body + 3x6 nub, right edge at x=560.
+	gx=529
+	fill=$((lvl * 20 / 100))
 	[ "$fill" -lt 2 ] && fill=2
-	fb_rect 10 544 40 20 BLACK
-	fb_rect 12 546 36 16 WHITE
-	fb_rect 13 547 "$fill" 14 BLACK
-	fb_rect 16 584 4 8 BLACK
-	fbink -q -b -t regular="$F_MED",px=24,top=7,left=478 "$lvl%" >/dev/null 2>&1
-	if [ "$(lipc-get-prop com.lab126.powerd isCharging 2>/dev/null)" = 1 ]; then
-		fbink -q -b -g file="$DIR/icons/bolt.png",x=458,y=9 >/dev/null 2>&1
+	fb_rect 774 "$gx" 28 14 "$color"
+	fb_rect 776 $((gx + 2)) 24 10 WHITE
+	fb_rect 778 $((gx + 4)) "$fill" 6 "$color"
+	fb_rect 778 $((gx + 28)) 3 6 "$color"
+
+	# Percentage right-aligned 8 px before the glyph; bolt before that while charging.
+	w=$(text_width "$F_REG" 22 "$lvl%")
+	tx=$((gx - 8 - ${w:-36}))
+	fbink -q -b -C "$color" -t regular="$F_REG",px=22,top=770,left="$tx" "$lvl%" >/dev/null 2>&1
+	if [ "$charging" = 1 ]; then
+		fbink -q -b -g file="$DIR/icons/bolt.png",x=$((tx - 20)),y=770 >/dev/null 2>&1
 	fi
 }
 
@@ -227,11 +247,11 @@ draw() {
 			rain_text=""
 		fi
 		if [ -n "$rain_text" ]; then
-			fb_rect 662 0 600 86 BLACK
-			fb_text "$F_BOLD" 48 678 0 0 "$rain_text" -h
+			fb_rect 658 0 600 80 BLACK
+			fb_text "$F_BOLD" 48 671 0 0 "$rain_text" -h
 		else
-			fb_text "$F_BOLD" 54 674 0 0 "No rain"
-			fb_text "$F_REG" 22 736 0 0 "next $RAIN_LOOKAHEAD_HOURS hours (max $W_RAIN_MAXP%)"
+			fb_text "$F_BOLD" 54 664 0 0 "No rain"
+			fb_text "$F_REG" 22 726 0 0 "next $RAIN_LOOKAHEAD_HOURS hours (max $W_RAIN_MAXP%)"
 		fi
 
 		age=$((now - W_FETCHED))
@@ -245,8 +265,7 @@ draw() {
 		footer="$PLACE"
 	fi
 
-	draw_battery
-	fb_text "$F_REG" 22 770 0 0 "$footer" -C GRAY5
+	draw_status "$footer"
 
 	if [ "$flash" = 1 ]; then
 		fbink -q -f -s >/dev/null 2>&1
