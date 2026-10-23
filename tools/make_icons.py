@@ -131,13 +131,13 @@ def main():
     flakes(d, [(55, 140), (100, 165), (145, 140)], 18)
     save(img, "snow")
 
-    # Small charging bolt for the battery gauge (14x22).
-    bw, bh = 14, 22
-    small = Image.new("L", (bw * SCALE, bh * SCALE), WHITE)
+    # Small charging bolt for the battery gauge (9x14: the battery body's height).
+    # Designed on a 14x22 grid, rendered straight to the target size.
+    small = Image.new("L", (14 * SCALE, 22 * SCALE), WHITE)
     sd = ImageDraw.Draw(small)
     pts = [(9, 0), (1, 13), (6, 13), (4, 22), (13, 8), (8, 8), (11, 0)]
     sd.polygon([(u(x), u(y)) for (x, y) in pts], fill=BLACK)
-    small.resize((bw, bh), Image.LANCZOS).save(OUT / "bolt.png", optimize=True)
+    small.resize((9, 14), Image.LANCZOS).save(OUT / "bolt.png", optimize=True)
 
     img, d = canvas()
     cloud(d, 18, 8, 164)

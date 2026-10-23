@@ -433,10 +433,11 @@ draw_status() {
 	fb_rect 778 $((gx + 4)) "$fill" 6 "$color"
 	fb_rect 778 $((gx + 28)) 3 6 "$color"
 
-	# Percentage right-aligned 8 px before the glyph; bolt before that while charging.
+	# Percentage right-aligned 8 px before the glyph; while charging, a bolt the height of
+	# the battery body 5 px before that.
 	fb_rtext "$F_REG" 22 770 $((gx - 8)) "$lvl%" -C "$color"
 	if [ "$charging" = 1 ]; then
-		fb_image "$DIR/icons/bolt.png" $((RTEXT_LEFT - 20)) 770 14 22
+		fb_image "$DIR/icons/bolt.png" $((RTEXT_LEFT - 14)) 774 9 14
 	fi
 }
 
@@ -449,18 +450,22 @@ draw_clock() {
 	fb_text "$F_BOLD" 220 $CLOCK_TOP 0 0 "$(date '+%H:%M')"
 }
 
+# Redraw and refresh only the status bar, and only when its content changed.
+refresh_status() {
+	read_status
+	[ "$STATUS_KEY" = "$DRAWN_STATUS" ] && return 0
+	fb_rect $STATUS_TOP 40 520 $STATUS_H WHITE
+	draw_status
+	fb_refresh $STATUS_TOP 40 520 $STATUS_H
+}
+
 # Minute tick between full redraws: clear, redraw and refresh only the clock band, and the
 # status bar only when it changed; the rest of the screen is not touched.
 draw_partial() {
 	fb_rect $CLOCK_TOP 0 600 $CLOCK_H WHITE
 	draw_clock
 	fb_refresh $CLOCK_TOP 0 600 $CLOCK_H
-
-	read_status
-	[ "$STATUS_KEY" = "$DRAWN_STATUS" ] && return 0
-	fb_rect $STATUS_TOP 40 520 $STATUS_H WHITE
-	draw_status
-	fb_refresh $STATUS_TOP 40 520 $STATUS_H
+	refresh_status
 }
 
 # draw FLASH: redraw and refresh the whole screen (FLASH=1: black flash, clears ghosting).
@@ -572,8 +577,12 @@ run() {
 	log "start ($LAYOUT layout)"
 
 	WATCH_PID=""
+	EVENT_PID=""
 	SLEEP_PID=""
 	trap 'shutdown' TERM INT HUP
+	# Power events (charger plugged/unplugged, battery level) redraw the status bar now
+	# rather than at the next minute tick.
+	trap ':' USR1
 
 	ui_off
 	layout_init
@@ -590,6 +599,14 @@ run() {
 			kill -TERM "$main_pid" 2>/dev/null
 	) &
 	WATCH_PID=$!
+
+	# powerd broadcasts charging, notCharging, USBPlugin, USBUnplug and battLevelChanged;
+	# on any of them, poke the main loop to re-read the status.
+	(
+		lipc-wait-event -m com.lab126.powerd '*' 2>/dev/null |
+			while read -r _; do kill -USR1 "$main_pid" 2>/dev/null || break; done
+	) &
+	EVENT_PID=$!
 
 	last_fetch=0
 	last_ntp=0
@@ -631,20 +648,25 @@ run() {
 		sec=${sec#0}
 		sleep $((60 - sec)) &
 		SLEEP_PID=$!
-		wait "$SLEEP_PID"
+		# wait returns early when USR1 arrives; the sleep keeps running, so wait again.
+		until wait "$SLEEP_PID"; do
+			kill -0 "$SLEEP_PID" 2>/dev/null || break
+			refresh_status
+		done
 	done
 }
 
 shutdown() {
 	trap '' TERM INT HUP
 	log "stop"
-	# Children: the minute sleep and the power-button watcher (plus the watcher's dd).
-	# When started via setsid we lead our own process group: signal all of it
-	# (TERM is ignored here now, so this process survives).
+	# Children: the minute sleep, the power-button watcher (plus its dd) and the powerd
+	# event watcher (plus its lipc-wait-event). When started via setsid we lead our own
+	# process group: signal all of it (TERM is ignored here now, so this process survives).
 	if [ "$(cut -d' ' -f5 /proc/$$/stat)" = "$$" ]; then
 		kill -TERM -$$ 2>/dev/null
 	else
 		[ -n "$WATCH_PID" ] && pkill -P "$WATCH_PID" 2>/dev/null
+		[ -n "$EVENT_PID" ] && pkill -P "$EVENT_PID" 2>/dev/null
 		pkill -P $$ 2>/dev/null
 	fi
 	rm -f "$PIDFILE"

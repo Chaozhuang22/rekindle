@@ -20,9 +20,10 @@ Open-Meteo JSON ──fetch_weather──▶ /tmp/rekindle/weather.env ──rea
 - **Main loop** (`run`): wakes every minute.
   - Full redraw with flash at start and every `FULL_REFRESH_MINUTES`.
   - Otherwise `draw_partial` repaints only the clock band, plus the status band when its content changed.
+  - Between ticks, powerd events (`charging`, `notCharging`, `battLevelChanged`…) from a `lipc-wait-event` watcher send `USR1`. The interrupted `wait` calls `refresh_status`, then waits again for the same `sleep`.
   - Fetches every `WEATHER_MINUTES`; NTP sync hourly.
 - **Lifecycle**: `start [simplistic|forecast]` → `setsid "$0" run LAYOUT`.
-  - `run` writes the pidfile and `/tmp/rekindle/layout`, stops the Kindle framework (`ui_off`), and starts a power-button watcher: a `dd` on the input device that sends TERM to the loop.
+  - `run` writes the pidfile and `/tmp/rekindle/layout`, stops the Kindle framework (`ui_off`), and starts two watchers: a `dd` on the power-button input device that sends TERM to the loop, and the powerd event watcher.
   - `shutdown` kills the process group and restarts the framework (`ui_on`).
 - **Layouts**: `LAYOUT` selects a branch in `draw()`. `simplistic`: large current weather on dry days; compact row + rain banner + hourly chart when rain is due. `forecast`: compact row + 5 range rows (4 under the rain banner). KUAL `menu.json` passes the layout as `params`. KUAL is unreachable while the dashboard runs, so the layout is chosen only at start.
 

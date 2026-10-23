@@ -16,7 +16,8 @@ Turn an old Kindle into an always-on **clock and weather display**.
   chance of rain (black bars are the rainy hours)
 - Or start the **5-day forecast** layout instead of the hourly chart: one row per day with its icon, a
   low-to-high temperature bar, and the chance of rain on days likely to be wet
-- Quiet status bar: place, last weather update, and battery (turns black below 20 %); the power button returns to the normal Kindle UI
+- Quiet status bar: place, last weather update, and battery (turns black below 20 %; a charging bolt appears
+  as soon as the charger is plugged in); the power button returns to the normal Kindle UI
 - Runs entirely on the Kindle (shell script + [FBInk](https://github.com/NiLuJe/FBInk)), no server needed
 
 Tested end to end on a Kindle 7th gen (KT2) with firmware 5.8.11. Other Kindle Touch, Paperwhite 1–3,
