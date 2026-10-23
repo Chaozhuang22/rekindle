@@ -32,9 +32,10 @@ Each entry was hit while building this project on a KT2 / FW 5.8.11, unless mark
 | Symptom | Cause | Fix |
 |---|---|---|
 | Power button does nothing while the dashboard runs | The dashboard sets powerd's `preventScreenSaver`, and with that set powerd ignores the button: no `goingToScreenSaver` event. | Fixed: the script reads the power key straight from its input device, found by name in `/proc/bus/input/devices` (KT2: `max77696-onkey` = `event0`). `rekindle.log` records the device as "power button device …"; if yours has an unexpected name, add it to the pattern in `power_key_device`. |
-| Text drawn with `-C WHITE -B BLACK` comes out black on white | FBInk 1.25's TrueType path did not honour these colours in our tests. | Use `-h` (invert) on a black rectangle, as the rain banner does. |
+| Text drawn with `-C WHITE -B BLACK` comes out black on white | FBInk 1.25's TrueType path did not honour these colours in our tests. | Use `-h` (invert) on a black rectangle. Text over a gray rectangle (the rain banner) needs `-O` (no background), or it paints a white box. |
 | Dashboard keeps running old code after `deploy.sh` | A running shell keeps executing the old script file. | `scripts/deploy.sh --restart`. |
 | `grep -E`, `head -c`, `nohup` "not found"/"invalid option" | BusyBox 1.17 on FW 5.8. | Use `grep -e`, `cut -c`, `setsid`. |
+| awk: "Call to undefined function" | BusyBox 1.17 awk reads `var (expr)` in a concatenation as a call to a function `var`. | Put the parenthesised value in a variable first, then concatenate. |
 | Clock in the Kindle's own status bar is an hour off | The Kindle's timezone setting (e.g. a China-region device in Japan). | The dashboard ignores it (`TZ_POSIX` in `rekindle.conf`). To fix the status bar, change the time zone in Settings → Device Options. |
 | "weather offline since HH:MM" in the footer | No successful fetch for 2 hours. | Check Wi-Fi; `rekindle.sh fetch` over SSH shows the parsed result or the error is in `rekindle.log`. |
 

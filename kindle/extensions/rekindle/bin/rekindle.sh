@@ -2,10 +2,12 @@
 # rekindle: always-on time & weather dashboard for a jailbroken Kindle.
 # Target: Kindle 7th gen (KT2), FW 5.8.x, BusyBox 1.17 ash, FBInk in /usr/bin.
 #
-# Usage: rekindle.sh start | stop | status | run | fetch
-#   start   launch the dashboard in the background (used by KUAL)
+# Usage: rekindle.sh start [simplistic|forecast] | stop | status | run [simplistic|forecast] | fetch
+#   start   launch the dashboard in the background (used by KUAL); the layout is the
+#           current weather with an hourly rain chart when rain is due (simplistic,
+#           default) or with a 5-day forecast (forecast)
 #   stop    stop it and bring the normal Kindle UI back
-#   status  print whether it is running and the last weather data
+#   status  print whether it is running (and its layout) and the last weather data
 #   run     run the dashboard loop in the foreground
 #   fetch   fetch weather once and print the parsed values
 #
@@ -20,6 +22,7 @@ export TZ="$TZ_POSIX"
 STATE=/tmp/rekindle
 PIDFILE=$STATE/pid
 WEATHER_ENV=$STATE/weather.env
+LAYOUT_FILE=$STATE/layout
 LOG=$DIR/rekindle.log
 
 FONTS=/usr/java/lib/fonts
@@ -67,8 +70,8 @@ fetch_weather() {
 	url="http://api.open-meteo.com/v1/forecast?latitude=$LATITUDE&longitude=$LONGITUDE"
 	url="$url&current=temperature_2m,weather_code,precipitation,is_day"
 	url="$url&hourly=precipitation_probability,precipitation"
-	url="$url&daily=temperature_2m_max,temperature_2m_min"
-	url="$url&forecast_days=2&forecast_hours=$RAIN_LOOKAHEAD_HOURS&timezone=$tz_enc"
+	url="$url&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max"
+	url="$url&forecast_days=6&forecast_hours=$RAIN_LOOKAHEAD_HOURS&timezone=$tz_enc"
 
 	json=$STATE/weather.json
 	if ! curl -s -f -m 20 -o "$json.tmp" "$url"; then
@@ -92,6 +95,39 @@ fetch_weather() {
 
 	tmax=$(json_arr "$daily" temperature_2m_max | cut -d, -f1)
 	tmin=$(json_arr "$daily" temperature_2m_min | cut -d, -f1)
+
+	# The next five days (today, the first entry, is skipped) for the forecast layout:
+	# weekday names (computed here; BusyBox date cannot parse dates), weather codes,
+	# rounded high/low and the day's highest precipitation probability.
+	days=$(awk -v times="$(json_arr "$daily" time)" \
+		-v codes="$(json_arr "$daily" weather_code)" \
+		-v maxs="$(json_arr "$daily" temperature_2m_max)" \
+		-v mins="$(json_arr "$daily" temperature_2m_min)" \
+		-v pops="$(json_arr "$daily" precipitation_probability_max)" '
+		function r(v,  x) { x = sprintf("%.0f", v); return (x == "-0") ? "0" : x }
+		BEGIN {
+			split("0 3 2 5 0 3 5 1 4 6 2 4", off, " ")
+			split("Sun Mon Tue Wed Thu Fri Sat", name, " ")
+			n = split(times, t, ","); split(codes, c, ","); split(maxs, hi, ",")
+			split(mins, lo, ","); split(pops, p, ",")
+			ds = ""; cs = ""; his = ""; los = ""; ps = ""
+			for (i = 2; i <= n; i++) {
+				if (hi[i] == "null" || lo[i] == "null") continue
+				gsub(/"/, "", t[i])
+				y = substr(t[i], 1, 4) + 0; m = substr(t[i], 6, 2) + 0; d = substr(t[i], 9, 2) + 0
+				if (m < 3) y--
+				w = (y + int(y / 4) - int(y / 100) + int(y / 400) + off[m] + d) % 7
+				# BusyBox awk reads `sep (...)` as a call to a function sep: no
+				# parenthesised term directly after a variable in a concatenation.
+				sep = (ds == "") ? "" : " "
+				cv = (c[i] == "null") ? "-1" : c[i]
+				pv = (p[i] == "null") ? 0 : sprintf("%d", p[i])
+				hv = r(hi[i]); lv = r(lo[i])
+				ds = ds sep name[w + 1]
+				cs = cs sep cv; his = his sep hv; los = los sep lv; ps = ps sep pv
+			}
+			printf "W_D_DAYS=\"%s\"\nW_D_CODES=\"%s\"\nW_D_MAX=\"%s\"\nW_D_MIN=\"%s\"\nW_D_POP=\"%s\"\n", ds, cs, his, los, ps
+		}')
 
 	# Per-hour series for the rain chart (hour, probability, rainy flag), the first rainy
 	# hour, the hour that rainy run ends (empty if it outlasts the window), and the max probability.
@@ -127,6 +163,7 @@ fetch_weather() {
 		echo "W_TMAX=$tmax"
 		echo "W_TMIN=$tmin"
 		echo "$rain"
+		echo "$days"
 		echo "W_FETCHED=$(date +%s)"
 	} >"$WEATHER_ENV.tmp" && mv "$WEATHER_ENV.tmp" "$WEATHER_ENV"
 	return 0
@@ -285,6 +322,72 @@ draw_rain_chart() {
 	done
 }
 
+# Compact current-weather row (y 344..472) shared by the rain and forecast layouts.
+# Uses ICON, DESC, temp and hilo from draw.
+draw_now_row() {
+	fb_image "$DIR/icons/$ICON.png" 36 352 120 120
+	fb_ltext "$F_BOLD" 112 344 170 "$temp"
+	fb_rtext "$F_REG" 32 366 560 "$DESC"
+	[ -n "$hilo" ] && fb_rtext "$F_REG" 30 412 560 "$hilo" -C GRAY5
+}
+
+# Rain banner: light gray band (56 tall) with the rain window in bold and the peak
+# chance in gray. Text is drawn background-less (-O) so the band shows through.
+# draw_rain_banner TOP
+draw_rain_banner() {
+	fb_rect "$1" 40 520 56 GRAYD
+	fb_ltext "$F_BOLD" 34 $(($1 + 10)) 60 "$rain_text" -O
+	fb_rtext "$F_REG" 28 $(($1 + 14)) 540 "peak $W_RAIN_MAXP%" -O -C GRAY5
+}
+
+# Day rain chip: the banner's gray band at day scale, around a bold percentage.
+# draw_chip LEFT TOP TEXT
+draw_chip() {
+	w=$(text_width "$F_BOLD" "$(px_len 20)" "$3")
+	fb_rect "$2" "$1" $((${w:-0} * 1000 / S + 14)) 26 GRAYD
+	fb_ltext "$F_BOLD" 20 $(($2 + 3)) $(($1 + 7)) "$3" -O
+}
+
+# Forecast rows on the content margins: weekday, icon, rain chip (only when the day's
+# chance reaches RAIN_PROBABILITY), low, a low-to-high bar on a scale shared by the
+# rows shown (gray track, black range), high. Overwrites ICON/DESC via describe.
+# draw_forecast TOP ROW_HEIGHT ROWS
+draw_forecast() {
+	ft=$1 fh=$2 fn=$3
+	set -- $W_D_MAX
+	[ $# -gt 0 ] || return 0
+	[ "$fn" -gt $# ] && fn=$#
+	# Scale over the rows actually drawn.
+	lo_all=$(echo "$W_D_MIN" | awk -v n="$fn" '{ m = $1; for (i = 2; i <= n; i++) if ($i < m) m = $i; print m }')
+	hi_all=$(echo "$W_D_MAX" | awk -v n="$fn" '{ m = $1; for (i = 2; i <= n; i++) if ($i > m) m = $i; print m }')
+	span=$((hi_all - lo_all))
+	[ "$span" -lt 1 ] && span=1
+	bl=272 br=496
+	days="$W_D_DAYS " codes="$W_D_CODES " maxs="$W_D_MAX " mins="$W_D_MIN " pops="$W_D_POP "
+	i=0
+	while [ "$i" -lt "$fn" ]; do
+		wday=${days%% *} days=${days#* }
+		code=${codes%% *} codes=${codes#* }
+		hi=${maxs%% *} maxs=${maxs#* }
+		lo=${mins%% *} mins=${mins#* }
+		pop=${pops%% *} pops=${pops#* }
+		mid=$((ft + i * fh + fh / 2))
+
+		describe "$code" 1
+		fb_ltext "$F_BOLD" 26 $((mid - 17)) 40 "$wday"
+		fb_image "$DIR/icons/$ICON.png" 100 $((mid - 19)) 38 38
+		[ "$pop" -ge "$RAIN_PROBABILITY" ] && draw_chip 148 $((mid - 13)) "$pop%"
+		fb_rtext "$F_REG" 26 $((mid - 17)) 258 "$lo°" -C GRAY5
+		fb_rect $((mid - 2)) $bl $((br - bl)) 4 GRAYA
+		x1=$((bl + (lo - lo_all) * (br - bl) / span))
+		x2=$((bl + (hi - lo_all) * (br - bl) / span))
+		[ $((x2 - x1)) -lt 6 ] && x2=$((x1 + 6))
+		fb_rect $((mid - 5)) $x1 $((x2 - x1)) 10 BLACK
+		fb_rtext "$F_BOLD" 26 $((mid - 17)) 560 "$hi°"
+		i=$((i + 1))
+	done
+}
+
 # Status bar inputs: battery level, charging, weather fetch time and whether it is stale.
 # Sources $WEATHER_ENV. STATUS_KEY changes exactly when the status bar would look different.
 read_status() {
@@ -394,15 +497,19 @@ draw() {
 			rain_text=""
 		fi
 
-		if [ -n "$rain_text" ]; then
-			# Rain: compact weather row, black banner, hourly chart.
-			fb_image "$DIR/icons/$ICON.png" 36 352 120 120
-			fb_ltext "$F_BOLD" 112 344 170 "$temp"
-			fb_rtext "$F_REG" 32 366 560 "$DESC"
-			[ -n "$hilo" ] && fb_rtext "$F_REG" 30 412 560 "$hilo" -C GRAY5
-			fb_rect 494 40 520 64 BLACK
-			fb_ltext "$F_BOLD" 38 503 60 "$rain_text" -h
-			fb_rtext "$F_REG" 30 509 540 "peak $W_RAIN_MAXP%" -h
+		if [ "$LAYOUT" = forecast ]; then
+			# Forecast: compact weather row, the rain banner when due, then the days.
+			draw_now_row
+			if [ -n "$rain_text" ]; then
+				draw_rain_banner 494
+				draw_forecast 574 44 4
+			else
+				draw_forecast 508 48 5
+			fi
+		elif [ -n "$rain_text" ]; then
+			# Rain: compact weather row, rain banner, hourly chart.
+			draw_now_row
+			draw_rain_banner 494
 			draw_rain_chart 586 120
 		else
 			# Dry: nothing about rain; the weather grows into the space.
@@ -460,8 +567,9 @@ run() {
 		return 1
 	fi
 	echo $$ >"$PIDFILE"
+	echo "$LAYOUT" >"$LAYOUT_FILE"
 	trim_log
-	log "start"
+	log "start ($LAYOUT layout)"
 
 	WATCH_PID=""
 	SLEEP_PID=""
@@ -544,14 +652,26 @@ shutdown() {
 	exit 0
 }
 
+# Layout argument for start/run: simplistic (default) or forecast.
+layout_arg() {
+	case "${1:-simplistic}" in
+	simplistic | forecast) echo "${1:-simplistic}" ;;
+	*)
+		echo "unknown layout '$1' (use simplistic or forecast)" >&2
+		exit 2
+		;;
+	esac
+}
+
 case "$1" in
 start)
+	layout=$(layout_arg "$2") || exit 2
 	if is_running; then
 		echo "rekindle already running"
 		exit 0
 	fi
 	mkdir -p "$STATE"
-	setsid "$0" run >>"$LOG" 2>&1 </dev/null &
+	setsid "$0" run "$layout" >>"$LOG" 2>&1 </dev/null &
 	;;
 stop)
 	if is_running; then
@@ -561,17 +681,22 @@ stop)
 	fi
 	;;
 status)
-	if is_running; then echo "running (pid $(cat "$PIDFILE"))"; else echo "stopped"; fi
+	if is_running; then
+		echo "running (pid $(cat "$PIDFILE"), $(cat "$LAYOUT_FILE" 2>/dev/null) layout)"
+	else
+		echo "stopped"
+	fi
 	[ -f "$WEATHER_ENV" ] && cat "$WEATHER_ENV"
 	;;
 run)
+	LAYOUT=$(layout_arg "$2") || exit 2
 	run
 	;;
 fetch)
 	fetch_weather && cat "$WEATHER_ENV"
 	;;
 *)
-	echo "usage: $0 start|stop|status|run|fetch" >&2
+	echo "usage: $0 start [simplistic|forecast]|stop|status|run [simplistic|forecast]|fetch" >&2
 	exit 2
 	;;
 esac

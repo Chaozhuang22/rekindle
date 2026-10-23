@@ -38,12 +38,14 @@ Reference, read as needed:
 8. **Dashboard:** set `LATITUDE`, `LONGITUDE`, `PLACE`, `TZ_IANA` and `TZ_POSIX` in
    `kindle/extensions/rekindle/rekindle.conf` for the user's location. `TZ_POSIX` must be a POSIX
    string (guide phase 7 table), never an IANA name. Then `scripts/deploy.sh`;
-   device: KUAL → Rekindle dashboard → Start dashboard. Done when `scripts/screenshot.sh` shows the
+   device: KUAL → Rekindle dashboard → **Start: simplistic** or **Start: 5-day forecast** (ask the
+   user which layout they want). Done when `scripts/screenshot.sh` shows the
    clock and weather, a second screenshot a minute later shows the clock advanced, and the user
    confirms the power button returns to the Kindle UI.
 
 ## Changing the dashboard later
 
-Edit `kindle/extensions/rekindle/bin/rekindle.sh` (BusyBox 1.17 ash: no `grep -E`, `head -c`,
-`nohup`), then `scripts/deploy.sh --restart` and check with `scripts/screenshot.sh`. The on-device
+Edit `kindle/extensions/rekindle/bin/rekindle.sh` (BusyBox 1.17 ash and awk: no `grep -E`, `head -c`,
+`nohup`; in awk, no `var (expr)` concatenation, which parses as a function call),
+then `scripts/deploy.sh --restart` and check with `scripts/screenshot.sh`. The on-device
 `rekindle.conf` is preserved; edit it over SSH for per-device settings.

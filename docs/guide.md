@@ -172,8 +172,17 @@ scripts/deploy.sh
 The dashboard scales its 600×800 layout to the screen it finds, so Paperwhites (758×1024,
 1072×1448) get the same design, larger.
 
-On the Kindle: **KUAL → Rekindle dashboard → Start dashboard**. The Kindle UI stops and the
-dashboard takes over within about 5 seconds. The **power button** exits back to the Kindle UI.
+On the Kindle: **KUAL → Rekindle dashboard**, then pick a layout:
+
+- **Start: simplistic**: the current weather, plus a rain banner and an hourly rain chart when rain is due
+  within `RAIN_LOOKAHEAD_HOURS`.
+- **Start: 5-day forecast**: the current weather and the next five days (four when the rain banner is
+  showing), each with a low-to-high temperature bar and its chance of rain when that reaches
+  `RAIN_PROBABILITY`.
+
+The Kindle UI stops and the dashboard takes over within about 5 seconds. The **power button** exits
+back to the Kindle UI; to switch layouts, exit and start the other one. Over SSH the same choice is
+`rekindle.sh start simplistic` or `rekindle.sh start forecast` (plain `start` is the simplistic layout).
 
 Check it from the computer:
 
