@@ -193,9 +193,18 @@ ssh -i ~/.ssh/id_ed25519_kindle root@$KINDLE_HOST /mnt/us/extensions/rekindle/bi
 
 ✅ Done when the screenshot shows the clock and weather, and the clock advances a minute later.
 
-Keep the Kindle on a **wall charger**. Wi-Fi stays on and the device never sleeps while the
-dashboard runs. Plugging into a computer normally switches the Kindle into USB-drive mode, which
-takes `/mnt/us` (where the dashboard lives) away from it.
+On a **wall charger** (or any charger that does not enter USB-drive mode) the Kindle stays awake with
+Wi-Fi on, so SSH, `deploy.sh` and `screenshot.sh` work. **On battery** (`LOW_POWER=auto`, the default)
+it suspends between minute ticks and switches Wi-Fi off except for the weather fetch (every
+`WEATHER_MINUTES`) and the hourly clock sync, so SSH is unreachable for most of each minute: press the
+power button to return to the Kindle UI before deploying. `LOW_POWER=always` also suspends while charging,
+`never` keeps the old always-awake behaviour. Plugging into a computer normally switches the Kindle into
+USB-drive mode, which takes `/mnt/us` (where the dashboard lives) away from it.
+
+Optional **quiet hours** save more overnight: set `QUIET_HOURS="23-6"` (start-end hours, may wrap past
+midnight) in the device's `rekindle.conf`, and on battery the clock is repainted, and the Kindle wakes,
+only every `QUIET_MINUTES` (default 10, must divide 60) in that window, so the clock lags by up to that
+long. While charging, quiet hours have no effect.
 
 ## Updating later
 

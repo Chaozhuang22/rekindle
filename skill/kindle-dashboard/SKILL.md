@@ -49,3 +49,11 @@ Edit `kindle/extensions/rekindle/bin/rekindle.sh` (BusyBox 1.17 ash and awk: no 
 `nohup`; in awk, no `var (expr)` concatenation, which parses as a function call),
 then `scripts/deploy.sh --restart` and check with `scripts/screenshot.sh`. The on-device
 `rekindle.conf` is preserved; edit it over SSH for per-device settings.
+
+On battery the dashboard suspends between minute ticks (`LOW_POWER`, default `auto`), so SSH only works
+while charging or during the brief Wi-Fi window of each weather fetch. To work on a battery-powered
+device, press the power button (back to the Kindle UI), or set `LOW_POWER=never` in the device's
+`rekindle.conf`.
+
+`QUIET_HOURS` (e.g. `23-6`) with `QUIET_MINUTES` (a divisor of 60, default 10) in `rekindle.conf` makes
+the battery-powered clock tick less often overnight; ask the user whether they want it.

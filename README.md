@@ -10,7 +10,7 @@ Turn an old Kindle into an always-on **clock and weather display**.
 
 - Large clock, updated every minute by repainting only the clock area (the whole screen flashes clean every 15 minutes)
 - Temperature, conditions and today's high/low from [Open-Meteo](https://open-meteo.com/) (no API key), fetched
-  every 15 minutes (`WEATHER_MINUTES` in `rekindle.conf`)
+  every 30 minutes (`WEATHER_MINUTES` in `rekindle.conf`)
 - Rain only when it matters: on a dry day nothing about rain is shown; when rain is falling or due within
   12 hours, a gray banner such as **Rain 14:00–18:00 · peak 85%** appears above an hourly chart of the
   chance of rain (black bars are the rainy hours)
@@ -19,6 +19,10 @@ Turn an old Kindle into an always-on **clock and weather display**.
 - Quiet status bar: place, last weather update, and battery (turns black below 20 %; a charging bolt appears
   as soon as the charger is plugged in); the power button returns to the normal Kindle UI
 - Runs entirely on the Kindle (shell script + [FBInk](https://github.com/NiLuJe/FBInk)), no server needed
+- Built for battery: on battery the Kindle suspends between minute ticks (an RTC alarm wakes it each minute)
+  and Wi-Fi is on only for the weather fetch and clock sync; on a charger it stays awake and online
+  (`LOW_POWER` in `rekindle.conf`). Optional quiet hours (`QUIET_HOURS`, e.g. `23-6`) tick only every
+  10 minutes overnight
 
 Tested end to end on a Kindle 7th gen (KT2) with firmware 5.8.11. Other Kindle Touch, Paperwhite 1–3,
 Voyage, Oasis 1 and Basic models still on firmware 5.6.1.1–5.10.x should work the same way (the layout

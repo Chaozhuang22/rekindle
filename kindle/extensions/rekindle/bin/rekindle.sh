@@ -17,9 +17,14 @@ export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 
 DIR=$(cd "$(dirname "$0")/.." && pwd)
 . "$DIR/rekindle.conf"
+# Settings added after a device's rekindle.conf was written (deploy keeps that file).
+: "${LOW_POWER:=auto}"
+: "${QUIET_HOURS:=}"
+: "${QUIET_MINUTES:=10}"
 export TZ="$TZ_POSIX"
 
 STATE=/tmp/rekindle
+RTC=/sys/class/rtc/rtc1
 PIDFILE=$STATE/pid
 WEATHER_ENV=$STATE/weather.env
 LAYOUT_FILE=$STATE/layout
@@ -547,8 +552,171 @@ ui_off() {
 
 ui_on() {
 	fbink -q -c -m -M -t regular="$F_MED",px=36 "Returning to Kindle…" >/dev/null 2>&1
+	echo 0 >"$RTC/wakealarm" 2>/dev/null
+	lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
 	lipc-set-prop com.lab126.powerd preventScreenSaver 0
 	start framework >/dev/null 2>&1
+}
+
+# --- Low power ---------------------------------------------------------------
+# Between minute ticks the Kindle suspends to RAM (the e-ink keeps the image at no cost)
+# and an RTC alarm wakes it at the next minute. The radio is only powered for the weather
+# fetch and NTP sync. LOW_POWER: auto = only on battery (while charging, stay awake and
+# online so SSH works), always, never.
+
+low_power() {
+	case $LOW_POWER in
+	never) return 1 ;;
+	always) return 0 ;;
+	esac
+	[ "$ST_CHG" != 1 ]
+}
+
+# Turn wifi on (when it is off) and wait for it to connect. Returns non-zero on timeout.
+# RADIO_OFF tracks whether wifi_down switched the radio off.
+wifi_up() {
+	if [ "$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)" = CONNECTED ]; then
+		RADIO_OFF=0
+		return 0
+	fi
+	lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
+	RADIO_OFF=0
+	wtry=0
+	while [ "$wtry" -lt 45 ]; do
+		sleep 1
+		[ "$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)" = CONNECTED ] && return 0
+		wtry=$((wtry + 1))
+	done
+	log "wifi: not connected after 45 s"
+	return 1
+}
+
+wifi_down() {
+	lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
+	RADIO_OFF=1
+}
+
+# Minutes between ticks, in TICK: 1, or QUIET_MINUTES during QUIET_HOURS ("START-END" in
+# hours, wrapping past midnight, e.g. 23-6). QUIET_MINUTES must be a divisor of 60 so that
+# ticks and the hour boundaries line up; anything else disables quiet hours. Values are
+# matched as text first: arithmetic on 08/09 is an error in BusyBox ash, and 0 divides by zero.
+tick_minutes() {
+	TICK=1
+	case $QUIET_HOURS in
+	[0-9]-[0-9] | [0-9]-[0-9][0-9] | [0-9][0-9]-[0-9] | [0-9][0-9]-[0-9][0-9]) ;;
+	*) return 0 ;;
+	esac
+	case $QUIET_MINUTES in
+	1 | 2 | 3 | 4 | 5 | 6 | 10 | 12 | 15 | 20 | 30) ;;
+	*) return 0 ;;
+	esac
+	qs=${QUIET_HOURS%-*} qe=${QUIET_HOURS#*-}
+	qs=$((${qs#0} + 0)) qe=$((${qe#0} + 0))
+	qh=$(date +%H)
+	qh=${qh#0}
+	if [ "$qs" -le "$qe" ]; then
+		[ "$qh" -ge "$qs" ] && [ "$qh" -lt "$qe" ] && TICK=$QUIET_MINUTES
+	else
+		{ [ "$qh" -ge "$qs" ] || [ "$qh" -lt "$qe" ]; } && TICK=$QUIET_MINUTES
+	fi
+	return 0
+}
+
+# Suspend until the next tick (the next minute, or the next QUIET_MINUTES boundary in quiet
+# hours). Returns non-zero when it did not really sleep (no usable alarm, suspend refused,
+# or woken at once by e.g. the charger): the caller then waits awake instead.
+suspend_until_next_tick() {
+	tick_minutes
+	tmin=$(date +%M)
+	sec=$(date +%S)
+	tmin=${tmin#0}
+	sec=${sec#0}
+	delay=$(((TICK - tmin % TICK) * 60 - sec))
+	[ "$delay" -ge 4 ] || return 1
+	echo 0 >"$RTC/wakealarm" 2>/dev/null
+	echo "+$delay" >"$RTC/wakealarm" 2>/dev/null
+	[ -n "$(cat "$RTC/wakealarm" 2>/dev/null)" ] || return 1
+	t0=$(date +%s)
+	echo mem >/sys/power/state 2>/dev/null
+	[ $(($(date +%s) - t0)) -ge 2 ] || return 1
+	# The RTC and the system clock can differ by under a second: do not tick early.
+	tmin=$(date +%M)
+	sec=$(date +%S)
+	tmin=${tmin#0}
+	sec=${sec#0}
+	[ $(((tmin + 1) % TICK)) -eq 0 ] && [ "$sec" -ge 55 ] && sleep $((60 - sec))
+	return 0
+}
+
+# Awake wait until the next minute boundary. USR1 (a powerd event) interrupts `wait`;
+# the sleep keeps running, so refresh the status bar and wait again.
+wait_next_minute() {
+	sec=$(date +%S)
+	sec=${sec#0}
+	sleep $((60 - sec)) &
+	SLEEP_PID=$!
+	until wait "$SLEEP_PID"; do
+		kill -0 "$SLEEP_PID" 2>/dev/null || break
+		refresh_status
+	done
+}
+
+# Weather fetch and NTP sync, when due, inside one wifi window. Failures back off
+# (1, 2, 5, 10, then 15 minutes) instead of retrying every tick.
+# Uses and updates next_fetch, next_ntp and fetch_fails; needs $now.
+sync_network() {
+	# Charger plugged in (or LOW_POWER=never) after a low-power stretch: radio back on.
+	if [ "$RADIO_OFF" = 1 ] && ! low_power; then
+		wifi_up
+	fi
+
+	fetch_due=0 ntp_due=0
+	[ "$now" -ge "$next_fetch" ] && fetch_due=1
+	[ "$now" -ge "$next_ntp" ] && ntp_due=1
+	if [ $((fetch_due + ntp_due)) -eq 0 ]; then
+		# Unplugged after an awake stretch: do not leave the radio idling until the next window.
+		if low_power && [ "$RADIO_OFF" = 0 ]; then
+			wifi_down
+		fi
+		return 0
+	fi
+
+	radio_off=0 online=1
+	if low_power; then
+		radio_off=1
+		wifi_up || online=0
+	fi
+
+	redraw=0
+	if [ "$fetch_due" = 1 ]; then
+		if [ "$online" = 1 ] && fetch_weather; then
+			fetch_fails=0
+			next_fetch=$((now + WEATHER_MINUTES * 60 - 30))
+			redraw=1
+		else
+			fetch_fails=$((fetch_fails + 1))
+			case $fetch_fails in
+			1) backoff=60 ;;
+			2) backoff=120 ;;
+			3) backoff=300 ;;
+			4) backoff=600 ;;
+			*) backoff=900 ;;
+			esac
+			next_fetch=$((now + backoff))
+		fi
+	fi
+	if [ "$ntp_due" = 1 ]; then
+		if [ "$online" = 1 ] && ntpdate "$NTP_SERVER" >/dev/null 2>&1; then
+			next_ntp=$((now + 3600))
+		else
+			log "ntp: sync with $NTP_SERVER failed"
+			next_ntp=$((now + 600))
+		fi
+	fi
+
+	[ "$radio_off" = 1 ] && wifi_down
+	[ "$redraw" = 1 ] && draw 0
+	return 0
 }
 
 # Input device of the power button: the first device in /proc/bus/input/devices whose
@@ -594,9 +762,19 @@ run() {
 	log "power button device $key_dev"
 	main_pid=$$
 	(
-		dd if="$key_dev" bs=16 count=1 >/dev/null 2>&1 &&
-			log "power button pressed" &&
-			kill -TERM "$main_pid" 2>/dev/null
+		# One fd, one struct input_event (16 bytes on 32-bit ARM) at a time: type, code and
+		# value start at byte 8 (hex char 25). Act only on a key press (type 1, value 1);
+		# after a suspend the read can return early without an event.
+		while ev=$(dd bs=16 count=1 2>/dev/null | hexdump -v -e '16/1 "%02x "' | cut -c25-); do
+			case $ev in
+			"01 00 "??" 00 01 00 00 00"*)
+				log "power button pressed"
+				kill -TERM "$main_pid" 2>/dev/null
+				exit 0
+				;;
+			"") sleep 1 ;;
+			esac
+		done <"$key_dev"
 	) &
 	WATCH_PID=$!
 
@@ -608,8 +786,10 @@ run() {
 	) &
 	EVENT_PID=$!
 
-	last_fetch=0
-	last_ntp=0
+	RADIO_OFF=0
+	next_fetch=0
+	next_ntp=0
+	fetch_fails=0
 	first=1
 	last_day=""
 	while :; do
@@ -628,31 +808,11 @@ run() {
 		last_day=$today
 		first=0
 
-		if [ $((now - last_fetch)) -ge $((WEATHER_MINUTES * 60 - 30)) ]; then
-			if fetch_weather; then
-				last_fetch=$now
-				draw 0
-			fi
-		fi
+		sync_network
 
-		if [ $((now - last_ntp)) -ge 3600 ]; then
-			if ntpdate "$NTP_SERVER" >/dev/null 2>&1; then
-				last_ntp=$now
-			else
-				log "ntp: sync with $NTP_SERVER failed"
-				last_ntp=$((now - 3000)) # retry in ~10 minutes
-			fi
+		if ! { low_power && suspend_until_next_tick; }; then
+			wait_next_minute
 		fi
-
-		sec=$(date +%S)
-		sec=${sec#0}
-		sleep $((60 - sec)) &
-		SLEEP_PID=$!
-		# wait returns early when USR1 arrives; the sleep keeps running, so wait again.
-		until wait "$SLEEP_PID"; do
-			kill -0 "$SLEEP_PID" 2>/dev/null || break
-			refresh_status
-		done
 	done
 }
 
