@@ -572,8 +572,20 @@ low_power() {
 	[ "$ST_CHG" != 1 ]
 }
 
+# Wait up to $1 seconds for wifi to connect. Returns non-zero on timeout.
+wifi_wait() {
+	wtry=0
+	while [ "$wtry" -lt "$1" ]; do
+		sleep 1
+		[ "$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)" = CONNECTED ] && return 0
+		wtry=$((wtry + 1))
+	done
+	return 1
+}
+
 # Turn wifi on (when it is off) and wait for it to connect. Returns non-zero on timeout.
-# RADIO_OFF tracks whether wifi_down switched the radio off.
+# RADIO_OFF tracks whether wifi_down switched the radio off. On a timeout the radio is
+# power-cycled once and the failure is logged with wifid's last messages.
 wifi_up() {
 	if [ "$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)" = CONNECTED ]; then
 		RADIO_OFF=0
@@ -581,19 +593,28 @@ wifi_up() {
 	fi
 	lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
 	RADIO_OFF=0
-	wtry=0
-	while [ "$wtry" -lt 45 ]; do
-		sleep 1
-		[ "$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)" = CONNECTED ] && return 0
-		wtry=$((wtry + 1))
-	done
-	log "wifi: not connected after 45 s"
+	wifi_wait 45 && return 0
+	log "wifi: not connected after 45 s (cmState=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)); cycling radio"
+	grep -e wifid /var/log/messages 2>/dev/null | grep -v -e getcmState -e getprofileData | tail -n 6 | while read -r wline; do log "wifid: $wline"; done
+	lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
+	sleep 3
+	lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
+	wifi_wait 45 && return 0
+	log "wifi: still not connected after radio cycle (cmState=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null))"
 	return 1
 }
 
+# Radio off. Waits (up to 10 s) for wifid to report it down, so the next suspend cannot
+# interrupt the driver mid-shutdown.
 wifi_down() {
 	lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
 	RADIO_OFF=1
+	wtry=0
+	while [ "$wtry" -lt 10 ] && [ "$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)" = CONNECTED ]; do
+		sleep 1
+		wtry=$((wtry + 1))
+	done
+	sleep 1
 }
 
 # Minutes between ticks, in TICK: 1, or QUIET_MINUTES during QUIET_HOURS ("START-END" in
