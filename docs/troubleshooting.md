@@ -40,7 +40,7 @@ Each entry was hit while building this project on a KT2 / FW 5.8.11, unless mark
 | "weather offline since HH:MM" in the footer | No successful fetch for 2 hours. | Check Wi-Fi; `rekindle.sh fetch` over SSH shows the parsed result or the error is in `rekindle.log`. |
 | Dashboard unreachable over SSH, or `deploy.sh` times out | On battery the Kindle suspends and switches Wi-Fi off between fetches (`LOW_POWER`). | Plug in a charger (stays awake and online), or press the power button to leave the dashboard; set `LOW_POWER=never` in the device's `rekindle.conf` for development. |
 | Power button exits the dashboard right after a wake, or not at all | The key watcher acts only on a key-press event; a read can return early after a suspend with no event. | Fixed: `rekindle.sh` checks the event type and value. If your model's button is not reported as an `EV_KEY` press, check `/proc/bus/input/devices`. |
-| "fetch failed" repeating in `rekindle.log` | No network. Retries back off 1, 2, 5, 10, then 15 minutes. | Check the router; the weather shows as offline after 2 hours. |
+| "fetch failed" or `wifi: not connected` repeating in `rekindle.log` | No network, or the Kindle cannot join the router (`wifid: ... wpa connect failed`). Retries back off 1, 2, 5, 10, then 30 minutes; each failed window keeps the radio on about 45–90 s, so a dead network drains the battery. | Check the router and that the Kindle's saved network still connects from the normal UI (press the power button once, not the 40 s hold, which wipes `/var/log/messages`). The weather shows as offline after 2 hours. |
 
 ## Recovering the Kindle UI
 

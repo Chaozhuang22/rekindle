@@ -594,8 +594,11 @@ wifi_up() {
 	lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
 	RADIO_OFF=0
 	wifi_wait 45 && return 0
-	log "wifi: not connected after 45 s (cmState=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)); cycling radio"
+	log "wifi: not connected after 45 s (cmState=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null))"
 	grep -e wifid /var/log/messages 2>/dev/null | grep -v -e getcmState -e getprofileData | tail -n 6 | while read -r wline; do log "wifid: $wline"; done
+	dmesg 2>/dev/null | grep -i -e ar6000 -e mmc | tail -n 4 | while read -r wline; do log "dmesg: $wline"; done
+	# Cycle only on the first failures: each extra try keeps the radio on for another 45 s.
+	[ "${fetch_fails:-0}" -lt 2 ] || return 1
 	lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
 	sleep 3
 	lipc-set-prop com.lab126.cmd wirelessEnable 1 2>/dev/null
@@ -721,7 +724,7 @@ sync_network() {
 			2) backoff=120 ;;
 			3) backoff=300 ;;
 			4) backoff=600 ;;
-			*) backoff=900 ;;
+			*) backoff=1800 ;;
 			esac
 			next_fetch=$((now + backoff))
 		fi
@@ -731,7 +734,7 @@ sync_network() {
 			next_ntp=$((now + 3600))
 		else
 			log "ntp: sync with $NTP_SERVER failed"
-			next_ntp=$((now + 600))
+			next_ntp=$((now + 1800))
 		fi
 	fi
 
