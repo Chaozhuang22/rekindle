@@ -596,7 +596,7 @@ wifi_up() {
 	wifi_wait 45 && return 0
 	log "wifi: not connected after 45 s (cmState=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null))"
 	grep -e wifid /var/log/messages 2>/dev/null | grep -v -e getcmState -e getprofileData | tail -n 6 | while read -r wline; do log "wifid: $wline"; done
-	dmesg 2>/dev/null | grep -i -e ar6000 -e mmc | tail -n 4 | while read -r wline; do log "dmesg: $wline"; done
+	dmesg 2>/dev/null | grep -i -e ar600 -e wifi_card -e mmc | tail -n 4 | while read -r wline; do log "dmesg: $wline"; done
 	# Cycle only on the first failures: each extra try keeps the radio on for another 45 s.
 	[ "${fetch_fails:-0}" -lt 2 ] || return 1
 	lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
@@ -607,17 +607,19 @@ wifi_up() {
 	return 1
 }
 
-# Radio off. Waits (up to 10 s) for wifid to report it down, so the next suspend cannot
-# interrupt the driver mid-shutdown.
+# Radio off. wifid unloads the ath6kl_sdio driver (and cfg80211) about 2 s after the switch,
+# and the driver powers the chip down on unload. A suspend before that leaves the kernel
+# believing the chip is still powered: every later load fails with "device power already
+# on!" until a reboot. So wait (up to 20 s) until both modules are gone.
 wifi_down() {
 	lipc-set-prop com.lab126.cmd wirelessEnable 0 2>/dev/null
 	RADIO_OFF=1
 	wtry=0
-	while [ "$wtry" -lt 10 ] && [ "$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)" = CONNECTED ]; do
+	while [ "$wtry" -lt 20 ] && grep -q -e '^ath6kl_sdio ' -e '^cfg80211 ' /proc/modules; do
 		sleep 1
 		wtry=$((wtry + 1))
 	done
-	sleep 1
+	[ "$wtry" -lt 20 ] || log "wifi: driver still loaded 20 s after radio off"
 }
 
 # Minutes between ticks, in TICK: 1, or QUIET_MINUTES during QUIET_HOURS ("START-END" in
