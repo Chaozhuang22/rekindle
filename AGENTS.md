@@ -16,19 +16,20 @@ Open-Meteo JSON ──fetch_weather──▶ /tmp/rekindle/weather.env ──rea
                   (sed + awk)        (shell KEY=value, sourced)                (600×800 canvas units)
 ```
 
-- **State file**: `fetch_weather` writes `W_*` (current, hourly rain series) and `W_D_*` (next 5 days, space-separated lists) to `weather.env.tmp`, then `mv`s it into place, so a reader never sees a partial file. Drawing only ever sources this file and never calls the network.
+- **State files**: `fetch_weather` writes `W_*` (current, hourly rain series) to `weather.env.tmp`, then `mv`s it into place, so a reader never sees a partial file. In the `train` layout `fetch_train` does the same for `train.env` (`T_STATUS` normal/delay/part/stop, `T_NAME`, `T_FETCHED`), parsed with `awk` from JR East's English Kanto status page (HTTPS; the line is found by its `ico_rosen_<line>.svg` icon). Drawing only ever sources these files and never calls the network.
 - **Main loop** (`run`): wakes every minute.
   - Full redraw with flash at start and every `FULL_REFRESH_MINUTES`.
   - Otherwise `draw_partial` repaints only the clock band, plus the status band when its content changed.
   - Between ticks the loop either suspends or waits awake, per `low_power` (`LOW_POWER` in `rekindle.conf`: `auto` = on battery only, `always`, `never`).
     - Suspend: `suspend_until_next_tick` sets an RTC alarm (`/sys/class/rtc/rtc1/wakealarm`) for the next tick boundary and writes `mem` to `/sys/power/state`. The tick is 1 minute, or `QUIET_MINUTES` inside `QUIET_HOURS` (`tick_minutes`; battery only, the awake path always ticks every minute). If it did not really sleep (<2 s, e.g. woken by the charger), it returns non-zero and `wait_next_minute` waits awake.
     - Awake: powerd events (`charging`, `notCharging`, `battLevelChanged`…) from a `lipc-wait-event` watcher send `USR1`. The interrupted `wait` calls `refresh_status`, then waits again for the same `sleep`.
-  - `sync_network` runs the weather fetch (every `WEATHER_MINUTES`) and NTP sync (hourly) inside one wifi window. When low power is active, wifi is off (`com.lab126.cmd wirelessEnable 0`, the Airplane-mode switch; the lower-level `wifid enable` wedged the radio) outside it. Failed fetches back off 1, 2, 5, 10, then 30 minutes (failed NTP retries every 30 minutes). On a wifi timeout `wifi_up` logs `cmState` and the last `wifid` lines, and power-cycles the radio once while `fetch_fails` < 2.
+  - `sync_network` runs the weather fetch (every `WEATHER_MINUTES`) and NTP sync (hourly) inside one wifi window; in the `train` layout a successful weather fetch is followed by `fetch_train` from an hour before `TRAIN_HOURS` until its end. When low power is active, wifi is off (`com.lab126.cmd wirelessEnable 0`, the Airplane-mode switch; the lower-level `wifid enable` wedged the radio) outside it. Failed fetches back off 1, 2, 5, 10, then 30 minutes (failed NTP retries every 30 minutes). On a wifi timeout `wifi_up` logs `cmState` and the last `wifid` lines, and power-cycles the radio once while `fetch_fails` < 2.
+  - `train_state` decides the band (`T_SHOW`: empty, delay, part, stop, or unknown when `train.env` is older than `WEATHER_MINUTES` + 15 min). The loop redraws fully when it differs from what `draw` last showed (`DRAWN_TRAIN`), which covers the start and end of `TRAIN_HOURS`.
   - `wifi_down` waits until `ath6kl_sdio` and `cfg80211` have left `/proc/modules` (about 2 s) before the loop may suspend. The driver powers the chip off on unload; a suspend before that leaves the kernel's `wifi_card_enable` flag set, every later load fails with `device power already on!`, and only a reboot recovers.
-- **Lifecycle**: `start [simplistic|forecast]` → `setsid "$0" run LAYOUT`.
+- **Lifecycle**: `start [simplistic|train]` → `setsid "$0" run LAYOUT`.
   - `run` writes the pidfile and `/tmp/rekindle/layout`, stops the Kindle framework (`ui_off`), and starts two watchers: a loop on the power-button input device (acts only on a key-press event; a read can return early after a suspend) that sends TERM to the loop, and the powerd event watcher.
   - `shutdown` kills the process group and restarts the framework (`ui_on`), which also re-enables wifi and clears the RTC alarm.
-- **Layouts**: `LAYOUT` selects a branch in `draw()`. `simplistic`: large current weather on dry days; compact row + rain banner + hourly chart when rain is due. `forecast`: compact row + 5 range rows (4 under the rain banner). KUAL `menu.json` passes the layout as `params`. KUAL is unreachable while the dashboard runs, so the layout is chosen only at start.
+- **Layouts**: `LAYOUT` selects what `draw()` adds. `simplistic`: large current weather on dry days; compact row + rain banner + hourly chart when rain is due. `train`: the same, plus the train band during `TRAIN_HOURS` when the line is not running normally: a gray band at y 352 above the dry-day weather, or sharing the rain banner (status left, rain window right). KUAL `menu.json` passes the layout as `params`. KUAL is unreachable while the dashboard runs, so the layout is chosen only at start.
 
 ## Key Directories
 
@@ -62,7 +63,7 @@ Device paths: log `/mnt/us/extensions/rekindle/rekindle.log`, state `/tmp/rekind
 - Use `grep -e`, `cut -c`, `setsid`; avoid `grep -E`, `head -c`, `nohup`, and `date -d` on date strings.
 - **awk**: `x = x sep (expr)` parses as a call to a function `sep`. Put the parenthesised value in a variable, then concatenate.
 - **Globals everywhere**: functions assign unscoped variables, and helpers clobber callers. `describe` sets `code`, `day`, `ICON`, `DESC`, `WET_NOW`; `fb_rtext` sets `w`, `rx`, `RTEXT_LEFT`. In loops, pick names no helper uses (e.g. `wday`, not `day`).
-- **Naming**: config in `UPPER_CASE` (from `rekindle.conf`); weather state `W_*` and `W_D_*`; status `ST_*`; layout bands `CLOCK_TOP`/`STATUS_TOP`.
+- **Naming**: config in `UPPER_CASE` (from `rekindle.conf`); weather state `W_*`; train state `T_*`; status `ST_*`; layout bands `CLOCK_TOP`/`STATUS_TOP`.
 - **JSON** is parsed with `sed` (`json_obj`/`json_num`/`json_arr`). This assumes Open-Meteo's single-line output and objects without nested braces; keep new fields flat.
 - **Errors**: weather and NTP failures are written with `log` and retried (fetch with backoff); the loop never exits on a network error. The weather is shown as stale after 2 h.
 - **Low power and SSH**: with `LOW_POWER` active the device is unreachable over SSH except during a wifi window. `auto` stays awake while charging, so develop on the charger or set `LOW_POWER=never` in the device's `rekindle.conf` (deploy keeps that file). New `rekindle.conf` keys need an in-script default (`: "${KEY:=value}"`) because existing devices keep their old file.
@@ -79,8 +80,8 @@ Device paths: log `/mnt/us/extensions/rekindle/rekindle.log`, state `/tmp/rekind
 ## Important Files
 
 - `kindle/extensions/rekindle/bin/rekindle.sh`: entry point (`start|stop|status|run|fetch`), `fetch_weather`, `describe` (WMO code → icon/description), `draw*`, `run`.
-- `kindle/extensions/rekindle/rekindle.conf`: location, `TZ_POSIX` (sets `TZ`; the Kindle has no zoneinfo, so IANA names silently become UTC), `TZ_IANA` (for the Open-Meteo request), intervals, rain thresholds.
-- `kindle/extensions/rekindle/menu.json`: KUAL items ("Start: simplistic", "Start: 5-day forecast", "Stop dashboard").
+- `kindle/extensions/rekindle/rekindle.conf`: location, `TZ_POSIX` (sets `TZ`; the Kindle has no zoneinfo, so IANA names silently become UTC), `TZ_IANA` (for the Open-Meteo request), intervals, rain thresholds, `TRAIN_LINE`/`TRAIN_HOURS`.
+- `kindle/extensions/rekindle/menu.json`: KUAL items ("Start: simplistic", "Start: with train status", "Stop dashboard").
 - `scripts/deploy.sh`: tars the extension over SSH. It **keeps the device's existing `rekindle.conf`**, so edit that over SSH for per-device settings.
 - `scripts/lib.sh`: `ROOT`, `KINDLE_HOST`/`KINDLE_KEY`/`KINDLE_VOL` defaults, `kssh`.
 

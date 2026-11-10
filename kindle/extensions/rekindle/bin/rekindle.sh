@@ -2,14 +2,15 @@
 # rekindle: always-on time & weather dashboard for a jailbroken Kindle.
 # Target: Kindle 7th gen (KT2), FW 5.8.x, BusyBox 1.17 ash, FBInk in /usr/bin.
 #
-# Usage: rekindle.sh start [simplistic|forecast] | stop | status | run [simplistic|forecast] | fetch
+# Usage: rekindle.sh start [simplistic|train] | stop | status | run [simplistic|train] | fetch
 #   start   launch the dashboard in the background (used by KUAL); the layout is the
 #           current weather with an hourly rain chart when rain is due (simplistic,
-#           default) or with a 5-day forecast (forecast)
+#           default), or the same plus a band when TRAIN_LINE is disrupted during
+#           TRAIN_HOURS (train)
 #   stop    stop it and bring the normal Kindle UI back
-#   status  print whether it is running (and its layout) and the last weather data
+#   status  print whether it is running (and its layout) and the last weather and train data
 #   run     run the dashboard loop in the foreground
-#   fetch   fetch weather once and print the parsed values
+#   fetch   fetch weather and train status once and print the parsed values
 #
 # While running, pressing the power button exits back to the Kindle UI.
 
@@ -21,12 +22,17 @@ DIR=$(cd "$(dirname "$0")/.." && pwd)
 : "${LOW_POWER:=auto}"
 : "${QUIET_HOURS:=}"
 : "${QUIET_MINUTES:=10}"
+: "${TRAIN_LINE:=JK}"
+: "${TRAIN_HOURS:=6-9}"
 export TZ="$TZ_POSIX"
 
 STATE=/tmp/rekindle
 RTC=/sys/class/rtc/rtc1
 PIDFILE=$STATE/pid
 WEATHER_ENV=$STATE/weather.env
+TRAIN_ENV=$STATE/train.env
+# JR East's English status page for the Kanto area (HTTPS; the KT2's curl handles it).
+TRAIN_URL=https://traininfo.jreast.co.jp/train_info/e/kanto.aspx
 LAYOUT_FILE=$STATE/layout
 LOG=$DIR/rekindle.log
 
@@ -75,8 +81,8 @@ fetch_weather() {
 	url="http://api.open-meteo.com/v1/forecast?latitude=$LATITUDE&longitude=$LONGITUDE"
 	url="$url&current=temperature_2m,weather_code,precipitation,is_day"
 	url="$url&hourly=precipitation_probability,precipitation"
-	url="$url&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max"
-	url="$url&forecast_days=6&forecast_hours=$RAIN_LOOKAHEAD_HOURS&timezone=$tz_enc"
+	url="$url&daily=temperature_2m_max,temperature_2m_min"
+	url="$url&forecast_days=1&forecast_hours=$RAIN_LOOKAHEAD_HOURS&timezone=$tz_enc"
 
 	json=$STATE/weather.json
 	if ! curl -s -f -m 20 -o "$json.tmp" "$url"; then
@@ -100,39 +106,6 @@ fetch_weather() {
 
 	tmax=$(json_arr "$daily" temperature_2m_max | cut -d, -f1)
 	tmin=$(json_arr "$daily" temperature_2m_min | cut -d, -f1)
-
-	# The next five days (today, the first entry, is skipped) for the forecast layout:
-	# weekday names (computed here; BusyBox date cannot parse dates), weather codes,
-	# rounded high/low and the day's highest precipitation probability.
-	days=$(awk -v times="$(json_arr "$daily" time)" \
-		-v codes="$(json_arr "$daily" weather_code)" \
-		-v maxs="$(json_arr "$daily" temperature_2m_max)" \
-		-v mins="$(json_arr "$daily" temperature_2m_min)" \
-		-v pops="$(json_arr "$daily" precipitation_probability_max)" '
-		function r(v,  x) { x = sprintf("%.0f", v); return (x == "-0") ? "0" : x }
-		BEGIN {
-			split("0 3 2 5 0 3 5 1 4 6 2 4", off, " ")
-			split("Sun Mon Tue Wed Thu Fri Sat", name, " ")
-			n = split(times, t, ","); split(codes, c, ","); split(maxs, hi, ",")
-			split(mins, lo, ","); split(pops, p, ",")
-			ds = ""; cs = ""; his = ""; los = ""; ps = ""
-			for (i = 2; i <= n; i++) {
-				if (hi[i] == "null" || lo[i] == "null") continue
-				gsub(/"/, "", t[i])
-				y = substr(t[i], 1, 4) + 0; m = substr(t[i], 6, 2) + 0; d = substr(t[i], 9, 2) + 0
-				if (m < 3) y--
-				w = (y + int(y / 4) - int(y / 100) + int(y / 400) + off[m] + d) % 7
-				# BusyBox awk reads `sep (...)` as a call to a function sep: no
-				# parenthesised term directly after a variable in a concatenation.
-				sep = (ds == "") ? "" : " "
-				cv = (c[i] == "null") ? "-1" : c[i]
-				pv = (p[i] == "null") ? 0 : sprintf("%d", p[i])
-				hv = r(hi[i]); lv = r(lo[i])
-				ds = ds sep name[w + 1]
-				cs = cs sep cv; his = his sep hv; los = los sep lv; ps = ps sep pv
-			}
-			printf "W_D_DAYS=\"%s\"\nW_D_CODES=\"%s\"\nW_D_MAX=\"%s\"\nW_D_MIN=\"%s\"\nW_D_POP=\"%s\"\n", ds, cs, his, los, ps
-		}')
 
 	# Per-hour series for the rain chart (hour, probability, rainy flag), the first rainy
 	# hour, the hour that rainy run ends (empty if it outlasts the window), and the max probability.
@@ -168,9 +141,104 @@ fetch_weather() {
 		echo "W_TMAX=$tmax"
 		echo "W_TMIN=$tmin"
 		echo "$rain"
-		echo "$days"
 		echo "W_FETCHED=$(date +%s)"
 	} >"$WEATHER_ENV.tmp" && mv "$WEATHER_ENV.tmp" "$WEATHER_ENV"
+	return 0
+}
+
+# --- Train status -------------------------------------------------------------
+
+# TRAIN_HOURS ("START-END", whole hours, not wrapping past midnight) as TH_S and TH_E.
+# Returns non-zero when it is malformed, which disables the train band.
+train_hours() {
+	case $TRAIN_HOURS in
+	[0-9]-[0-9] | [0-9]-[0-9][0-9] | [0-9][0-9]-[0-9] | [0-9][0-9]-[0-9][0-9]) ;;
+	*) return 1 ;;
+	esac
+	TH_S=${TRAIN_HOURS%-*} TH_E=${TRAIN_HOURS#*-}
+	TH_S=$((${TH_S#0} + 0)) TH_E=$((${TH_E#0} + 0))
+	[ "$TH_S" -lt "$TH_E" ]
+}
+
+# Hour of day without a leading zero, in TH.
+train_hour() {
+	TH=$(date +%H)
+	TH=${TH#0}
+}
+
+# Whether the weather fetch should also fetch the train status: train layout, from an hour
+# before TRAIN_HOURS (so the band is current at the start) until its end.
+train_due() {
+	[ "$LAYOUT" = train ] && train_hours || return 1
+	train_hour
+	[ "$TH" -ge $((TH_S - 1)) ] && [ "$TH" -lt "$TH_E" ]
+}
+
+# Fetch JR East's status page and atomically rewrite $TRAIN_ENV: T_STATUS (normal, delay,
+# part or stop; the worst when the line is listed more than once), T_NAME (English line
+# name without " Line") and T_FETCHED. The line is found by its symbol icon
+# (ico_rosen_jk.svg for JK). JR lists only delays of 30 minutes or more; its "Notice"
+# status counts as normal. Returns non-zero on failure.
+fetch_train() {
+	mkdir -p "$STATE"
+	page=$STATE/train.html
+	if ! curl -s -f -m 30 -o "$page.tmp" "$TRAIN_URL"; then
+		log "train: fetch failed"
+		return 1
+	fi
+	mv "$page.tmp" "$page"
+	ico="ico_rosen_$(echo "$TRAIN_LINE" | tr 'A-Z' 'a-z').svg"
+	tstate=$(tr -d '\r' <"$page" | awk -v ico="$ico" '
+		/class="rosenBox"/ { want = 0; cls = "" }
+		index($0, ico) { want = 1; next }
+		want && name == "" && /class="name">/ {
+			name = $0; sub(/.*class="name">/, "", name); sub(/<.*/, "", name); next
+		}
+		want && cls == "" && /class="status / {
+			cls = $0; sub(/.*class="status /, "", cls); sub(/".*/, "", cls); next
+		}
+		want && cls != "" && /alt="/ {
+			alt = $0; sub(/.*alt="/, "", alt); sub(/".*/, "", alt)
+			# Unknown classes count as a delay: a false alarm beats a missed disruption.
+			s = 1; st = "delay"
+			if (cls == "normal" || cls == "info") { s = 0; st = "normal" }
+			else if (cls == "adjust") { s = 3; st = "stop" }
+			else if (alt ~ /[Cc]ancel/) { s = 2; st = "part" }
+			if (!found || s > best) { best = s; worst = st }
+			found = 1; want = 0; cls = ""
+		}
+		END {
+			if (!found) exit 1
+			sub(/ Line$/, "", name)
+			printf "T_STATUS=%s\nT_NAME=\"%s\"\n", worst, name
+		}')
+	if [ -z "$tstate" ]; then
+		log "train: $TRAIN_LINE not found on $TRAIN_URL"
+		return 1
+	fi
+	{
+		echo "$tstate"
+		echo "T_FETCHED=$(date +%s)"
+	} >"$TRAIN_ENV.tmp" && mv "$TRAIN_ENV.tmp" "$TRAIN_ENV"
+	return 0
+}
+
+# What the train band shows now, in T_SHOW: empty (no band: other layout, outside
+# TRAIN_HOURS, or running normally), delay, part, stop, or unknown (no status fetched
+# within the last fetch interval plus 15 minutes). Sources $TRAIN_ENV.
+train_state() {
+	T_SHOW=""
+	[ "$LAYOUT" = train ] && train_hours || return 0
+	train_hour
+	[ "$TH" -ge "$TH_S" ] && [ "$TH" -lt "$TH_E" ] || return 0
+	T_STATUS="" T_NAME="" T_FETCHED=0
+	[ -f "$TRAIN_ENV" ] && . "$TRAIN_ENV"
+	: "${T_NAME:=$TRAIN_LINE}"
+	if [ $(($(date +%s) - T_FETCHED)) -gt $((WEATHER_MINUTES * 60 + 900)) ]; then
+		T_SHOW=unknown
+	elif [ "$T_STATUS" != normal ]; then
+		T_SHOW=$T_STATUS
+	fi
 	return 0
 }
 
@@ -327,7 +395,7 @@ draw_rain_chart() {
 	done
 }
 
-# Compact current-weather row (y 344..472) shared by the rain and forecast layouts.
+# Compact current-weather row (y 344..472) used by the rain layout.
 # Uses ICON, DESC, temp and hilo from draw.
 draw_now_row() {
 	fb_image "$DIR/icons/$ICON.png" 36 352 120 120
@@ -345,52 +413,48 @@ draw_rain_banner() {
 	fb_rtext "$F_REG" 28 $(($1 + 14)) 540 "peak $W_RAIN_MAXP%" -O -C GRAY5
 }
 
-# Day rain chip: the banner's gray band at day scale, around a bold percentage.
-# draw_chip LEFT TOP TEXT
-draw_chip() {
-	w=$(text_width "$F_BOLD" "$(px_len 20)" "$3")
-	fb_rect "$2" "$1" $((${w:-0} * 1000 / S + 14)) 26 GRAYD
-	fb_ltext "$F_BOLD" 20 $(($2 + 3)) $(($1 + 7)) "$3" -O
+# Train line symbol, as on JR station signs: a square outline around TRAIN_LINE.
+# draw_train_sign LEFT TOP SIZE FILL COLOR
+draw_train_sign() {
+	fb_rect "$2" "$1" "$3" "$3" "$5"
+	fb_rect $(($2 + 3)) $(($1 + 3)) $(($3 - 6)) $(($3 - 6)) "$4"
+	fb_text "$F_BOLD" $(($3 * 60 / 100)) $(($2 + $3 * 20 / 100)) "$1" $((600 - $1 - $3)) "$TRAIN_LINE" -O -C "$5"
 }
 
-# Forecast rows on the content margins: weekday, icon, rain chip (only when the day's
-# chance reaches RAIN_PROBABILITY), low, a low-to-high bar on a scale shared by the
-# rows shown (gray track, black range), high. Overwrites ICON/DESC via describe.
-# draw_forecast TOP ROW_HEIGHT ROWS
-draw_forecast() {
-	ft=$1 fh=$2 fn=$3
-	set -- $W_D_MAX
-	[ $# -gt 0 ] || return 0
-	[ "$fn" -gt $# ] && fn=$#
-	# Scale over the rows actually drawn.
-	lo_all=$(echo "$W_D_MIN" | awk -v n="$fn" '{ m = $1; for (i = 2; i <= n; i++) if ($i < m) m = $i; print m }')
-	hi_all=$(echo "$W_D_MAX" | awk -v n="$fn" '{ m = $1; for (i = 2; i <= n; i++) if ($i > m) m = $i; print m }')
-	span=$((hi_all - lo_all))
-	[ "$span" -lt 1 ] && span=1
-	bl=272 br=496
-	days="$W_D_DAYS " codes="$W_D_CODES " maxs="$W_D_MAX " mins="$W_D_MIN " pops="$W_D_POP "
-	i=0
-	while [ "$i" -lt "$fn" ]; do
-		wday=${days%% *} days=${days#* }
-		code=${codes%% *} codes=${codes#* }
-		hi=${maxs%% *} maxs=${maxs#* }
-		lo=${mins%% *} mins=${mins#* }
-		pop=${pops%% *} pops=${pops#* }
-		mid=$((ft + i * fh + fh / 2))
+# Train band on dry days: the rain banner's gray band (52 tall) in the empty space between
+# the divider and the weather, with the line symbol, "<line> <status>" in bold and a gray
+# note on the right. Gray text when the status is unknown. Uses T_SHOW and T_NAME.
+draw_train_band() {
+	case $T_SHOW in
+	delay) tw="delayed" tn="30+ min" ;;
+	stop) tw="suspended" tn="" ;;
+	part) tw="partly cancelled" tn="" ;;
+	*) tw="unknown" tn="no update" ;;
+	esac
+	tcolor=BLACK
+	[ "$T_SHOW" = unknown ] && tcolor=GRAY5
+	fb_rect 352 40 520 52 GRAYD
+	draw_train_sign 52 358 40 GRAYD "$tcolor"
+	fb_ltext "$F_BOLD" 30 363 104 "$T_NAME $tw" -O -C "$tcolor"
+	[ -n "$tn" ] && fb_rtext "$F_REG" 24 368 548 "$tn" -O -C GRAY5
+}
 
-		describe "$code" 1
-		fb_ltext "$F_BOLD" 26 $((mid - 17)) 40 "$wday"
-		fb_image "$DIR/icons/$ICON.png" 100 $((mid - 19)) 38 38
-		[ "$pop" -ge "$RAIN_PROBABILITY" ] && draw_chip 148 $((mid - 13)) "$pop%"
-		fb_rtext "$F_REG" 26 $((mid - 17)) 258 "$lo°" -C GRAY5
-		fb_rect $((mid - 2)) $bl $((br - bl)) 4 GRAYA
-		x1=$((bl + (lo - lo_all) * (br - bl) / span))
-		x2=$((bl + (hi - lo_all) * (br - bl) / span))
-		[ $((x2 - x1)) -lt 6 ] && x2=$((x1 + 6))
-		fb_rect $((mid - 5)) $x1 $((x2 - x1)) 10 BLACK
-		fb_rtext "$F_BOLD" 26 $((mid - 17)) 560 "$hi°"
-		i=$((i + 1))
-	done
+# Rain banner while the train band is due: the train status takes the bold left side and
+# the rain window moves to the gray right side (the chart below still shows the peak).
+# draw_rain_train_banner TOP
+draw_rain_train_banner() {
+	case $T_SHOW in
+	delay) tw="Delayed" ;;
+	stop) tw="Suspended" ;;
+	part) tw="Part cancelled" ;;
+	*) tw="Unknown" ;;
+	esac
+	tcolor=BLACK
+	[ "$T_SHOW" = unknown ] && tcolor=GRAY5
+	fb_rect "$1" 40 520 56 GRAYD
+	draw_train_sign 52 $(($1 + 8)) 40 GRAYD "$tcolor"
+	fb_ltext "$F_BOLD" 32 $(($1 + 13)) 104 "$tw" -O -C "$tcolor"
+	fb_rtext "$F_REG" 26 $(($1 + 17)) 540 "$rain_text" -O -C GRAY5
 }
 
 # Status bar inputs: battery level, charging, weather fetch time and whether it is stale.
@@ -477,6 +541,8 @@ draw_partial() {
 draw() {
 	flash=$1
 	read_status
+	train_state
+	DRAWN_TRAIN=$T_SHOW
 
 	fbink -q -b -k >/dev/null 2>&1
 
@@ -507,28 +573,25 @@ draw() {
 			rain_text=""
 		fi
 
-		if [ "$LAYOUT" = forecast ]; then
-			# Forecast: compact weather row, the rain banner when due, then the days.
+		if [ -n "$rain_text" ]; then
+			# Rain: compact weather row, rain banner (shared with the train status), hourly chart.
 			draw_now_row
-			if [ -n "$rain_text" ]; then
-				draw_rain_banner 494
-				draw_forecast 574 44 4
+			if [ -n "$T_SHOW" ]; then
+				draw_rain_train_banner 494
 			else
-				draw_forecast 508 48 5
+				draw_rain_banner 494
 			fi
-		elif [ -n "$rain_text" ]; then
-			# Rain: compact weather row, rain banner, hourly chart.
-			draw_now_row
-			draw_rain_banner 494
 			draw_rain_chart 586 120
 		else
-			# Dry: nothing about rain; the weather grows into the space.
+			# Dry: nothing about rain; the weather grows into the space below the train band.
+			[ -n "$T_SHOW" ] && draw_train_band
 			fb_image "$DIR/icons/$ICON.png" 40 420 200 200
 			fb_ltext "$F_BOLD" 160 410 270 "$temp"
 			fb_ltext "$F_REG" 36 600 276 "$DESC"
 			[ -n "$hilo" ] && fb_ltext "$F_REG" 32 648 276 "$hilo" -C GRAY5
 		fi
 	else
+		[ -n "$T_SHOW" ] && draw_train_band
 		fb_text "$F_MED" 40 500 0 0 "Fetching weather…"
 	fi
 
@@ -688,7 +751,8 @@ wait_next_minute() {
 }
 
 # Weather fetch and NTP sync, when due, inside one wifi window. Failures back off
-# (1, 2, 5, 10, then 15 minutes) instead of retrying every tick.
+# (1, 2, 5, 10, then 30 minutes) instead of retrying every tick. In the train layout a
+# successful weather fetch is followed by the train status fetch around TRAIN_HOURS.
 # Uses and updates next_fetch, next_ntp and fetch_fails; needs $now.
 sync_network() {
 	# Charger plugged in (or LOW_POWER=never) after a low-power stretch: radio back on.
@@ -719,6 +783,7 @@ sync_network() {
 			fetch_fails=0
 			next_fetch=$((now + WEATHER_MINUTES * 60 - 30))
 			redraw=1
+			train_due && fetch_train
 		else
 			fetch_fails=$((fetch_fails + 1))
 			case $fetch_fails in
@@ -823,10 +888,12 @@ run() {
 		now=$1 min=${2#0} today=$3
 
 		# Full redraw (with flash) at start and every FULL_REFRESH_MINUTES; full redraw
-		# for the new date after midnight; otherwise only the clock and changed status bar.
+		# for the new date after midnight or when the train band changes (TRAIN_HOURS start
+		# and end, status going stale); otherwise only the clock and changed status bar.
+		train_state
 		if [ "$first" = 1 ] || [ $((min % FULL_REFRESH_MINUTES)) -eq 0 ]; then
 			draw 1
-		elif [ "$today" != "$last_day" ]; then
+		elif [ "$today" != "$last_day" ] || [ "$T_SHOW" != "$DRAWN_TRAIN" ]; then
 			draw 0
 		else
 			draw_partial
@@ -860,12 +927,12 @@ shutdown() {
 	exit 0
 }
 
-# Layout argument for start/run: simplistic (default) or forecast.
+# Layout argument for start/run: simplistic (default) or train.
 layout_arg() {
 	case "${1:-simplistic}" in
-	simplistic | forecast) echo "${1:-simplistic}" ;;
+	simplistic | train) echo "${1:-simplistic}" ;;
 	*)
-		echo "unknown layout '$1' (use simplistic or forecast)" >&2
+		echo "unknown layout '$1' (use simplistic or train)" >&2
 		exit 2
 		;;
 	esac
@@ -895,6 +962,7 @@ status)
 		echo "stopped"
 	fi
 	[ -f "$WEATHER_ENV" ] && cat "$WEATHER_ENV"
+	[ -f "$TRAIN_ENV" ] && cat "$TRAIN_ENV"
 	;;
 run)
 	LAYOUT=$(layout_arg "$2") || exit 2
@@ -902,9 +970,10 @@ run)
 	;;
 fetch)
 	fetch_weather && cat "$WEATHER_ENV"
+	fetch_train && cat "$TRAIN_ENV"
 	;;
 *)
-	echo "usage: $0 start [simplistic|forecast]|stop|status|run [simplistic|forecast]|fetch" >&2
+	echo "usage: $0 start [simplistic|train]|stop|status|run [simplistic|train]|fetch" >&2
 	exit 2
 	;;
 esac

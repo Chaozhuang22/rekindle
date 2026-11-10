@@ -38,8 +38,9 @@ Reference, read as needed:
 8. **Dashboard:** set `LATITUDE`, `LONGITUDE`, `PLACE`, `TZ_IANA` and `TZ_POSIX` in
    `kindle/extensions/rekindle/rekindle.conf` for the user's location. `TZ_POSIX` must be a POSIX
    string (guide phase 7 table), never an IANA name. Then `scripts/deploy.sh`;
-   device: KUAL → Rekindle dashboard → **Start: simplistic** or **Start: 5-day forecast** (ask the
-   user which layout they want). Done when `scripts/screenshot.sh` shows the
+   device: KUAL → Rekindle dashboard → **Start: simplistic** or **Start: with train status** (ask the
+   user which layout they want; the train layout is for JR East Kanto lines: set `TRAIN_LINE` to the
+   line symbol on the station signs, e.g. `JK`, and `TRAIN_HOURS` to their commute). Done when `scripts/screenshot.sh` shows the
    clock and weather, a second screenshot a minute later shows the clock advanced, and the user
    confirms the power button returns to the Kindle UI.
 

@@ -176,13 +176,16 @@ On the Kindle: **KUAL → Rekindle dashboard**, then pick a layout:
 
 - **Start: simplistic**: the current weather, plus a rain banner and an hourly rain chart when rain is due
   within `RAIN_LOOKAHEAD_HOURS`.
-- **Start: 5-day forecast**: the current weather and the next five days (four when the rain banner is
-  showing), each with a low-to-high temperature bar and its chance of rain when that reaches
-  `RAIN_PROBABILITY`.
+- **Start: with train status**: the simplistic layout, plus a gray band while the JR East line
+  `TRAIN_LINE` (the symbol on the station signs, default `JK` Keihin-Tōhoku) is delayed by 30 minutes
+  or more, suspended or partly cancelled during `TRAIN_HOURS` (default `6-9`). The status comes from
+  JR East's English Kanto status page, fetched with the weather from an hour before `TRAIN_HOURS`
+  begins. When no status could be fetched for a while the band says **unknown**, so a missing band
+  always means the line is running normally. On rainy days the train status shares the rain banner.
 
 The Kindle UI stops and the dashboard takes over within about 5 seconds. The **power button** exits
 back to the Kindle UI; to switch layouts, exit and start the other one. Over SSH the same choice is
-`rekindle.sh start simplistic` or `rekindle.sh start forecast` (plain `start` is the simplistic layout).
+`rekindle.sh start simplistic` or `rekindle.sh start train` (plain `start` is the simplistic layout).
 
 Check it from the computer:
 

@@ -12,10 +12,10 @@
 			"exitmenu": true
 		},
 		{
-			"name": "Start: 5-day forecast",
+			"name": "Start: with train status",
 			"priority": 2,
 			"action": "./bin/rekindle.sh",
-			"params": "start forecast",
+			"params": "start train",
 			"exitmenu": true
 		},
 		{
