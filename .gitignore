@@ -2,3 +2,5 @@ vendor/
 *.log
 .DS_Store
 ._*
+.env
+.tmp/
