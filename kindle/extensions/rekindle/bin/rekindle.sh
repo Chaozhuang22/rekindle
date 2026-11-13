@@ -682,7 +682,7 @@ wifi_down() {
 		sleep 1
 		wtry=$((wtry + 1))
 	done
-	[ "$wtry" -lt 20 ] || log "wifi: driver still loaded 20 s after radio off"
+	[ "$wtry" -lt 20 ] || log "wifi: driver still loaded 20 s after radio off; staying awake"
 }
 
 # Minutes between ticks, in TICK: 1, or QUIET_MINUTES during QUIET_HOURS ("START-END" in
@@ -712,9 +712,11 @@ tick_minutes() {
 }
 
 # Suspend until the next tick (the next minute, or the next QUIET_MINUTES boundary in quiet
-# hours). Returns non-zero when it did not really sleep (no usable alarm, suspend refused,
-# or woken at once by e.g. the charger): the caller then waits awake instead.
+# hours). Returns non-zero when it did not really sleep (wifi driver still loaded, see
+# wifi_down; no usable alarm, suspend refused, or woken at once by e.g. the charger): the
+# caller then waits awake instead.
 suspend_until_next_tick() {
+	grep -q -e '^ath6kl_sdio ' -e '^cfg80211 ' /proc/modules && return 1
 	tick_minutes
 	tmin=$(date +%M)
 	sec=$(date +%S)
